@@ -36,8 +36,8 @@ module.exports = {
     field:      '🎬 Trabajo de campo',
     absent:     '❌ Ausente',
     early_exit: '🕐 Salida temprana',
-    day_off:    '📅 Día libre',
-    meeting:    '📍 Reunión',
+    day_off:    '📍 Día libre',
+    meeting:    '📅 Reunión',
   },
 
   // ═══════════════════════════════════════════════════════════════════
@@ -45,9 +45,9 @@ module.exports = {
   // ═══════════════════════════════════════════════════════════════════
 
   asistencia: {
-    title: '📋 *Registro de asistencia*',
+    title: '🕒  *¡Hora de marcar!*',
     linkInstructions: 'Abrí este link *desde tu computadora*:',
-    linkLabel: 'Registrar asistencia',
+    linkLabel: 'Registrá tu asistencia',
     pinLabel: (pin) => `🔑 Tu PIN personal: *\`${pin}\`*`,
     expireNote: '⏱️ Link y PIN expiran en 2 minutos. Solo funciona desde desktop.',
     alreadyComplete: '✅ Ya tenés el día completo registrado.',
@@ -81,7 +81,7 @@ module.exports = {
     onTrack: '🟢 Vas bien esta semana.',
     behind: (missing, suggestedExit) =>
       `🟡 Te faltan *${missing}hs* esta semana. ` +
-      `Para compensar, hoy deberías quedarte hasta las *${suggestedExit}*.`,
+      `Para compensar, hoy deberías trabajar hasta las *${suggestedExit}*.`,
     behindGeneral: (missing) =>
       `🟡 Te faltan *${missing}hs* esta semana. Tenés hasta el viernes para compensarlas.`,
     ahead: (extra) => `🟢 Tenés *${extra}hs* de más esta semana. Bien ahí.`,
@@ -94,10 +94,10 @@ module.exports = {
   // ═══════════════════════════════════════════════════════════════════
 
   reminders: {
-    entryMissing: '🔔 Son las 9:35 y todavía no registraste tu entrada. Escribí `/marcar` para fichar.',
-    lunchMissing: '🍽️ Son las 14:00 y todavía no registraste tu almuerzo. Escribí `/marcar` para registrarlo.',
-    exitMissing: '🔔 Todavía no registraste tu salida. Escribí `/marcar` para completar.',
-    meetingOver: (time) => `📍 Tu reunión terminó a las ${time}. ¿Ya volviste a tu puesto? Escribí \`/marcar\` si necesitás registrar algo.`,
+    entryMissing: '🔔 Son las 9:35 👀 ¿Te olvidaste de marcar tu entrada?. Hacelo rápido con `/marcar` .',
+    lunchMissing: '🍽️ Son las 14:00 ¿Te olvidaste de registrar tu almuerzo?. Escribí `/marcar` para registrarlo.',
+    exitMissing: '🔔 🔔 Aún no registraste tu salida. Podés completarla escribiendo `/marcar`',
+    meetingOver: (time) => `📍 Tu reunión terminó a las ${time}. ¿Ya volviste? Escribí \`/marcar\` si necesitás registrar algo.`,
   },
 
   // ═══════════════════════════════════════════════════════════════════
