@@ -1,6 +1,7 @@
 const express = require('express');
 const dayjs = require('dayjs');
 const db = require('./database');
+const verify = require('./verification');
 
 const setupDashboard = (boltApp) => {
   const router = express.Router();
@@ -10,13 +11,11 @@ const setupDashboard = (boltApp) => {
     const today = dayjs().format('YYYY-MM-DD');
     const weekStart = dayjs().startOf('week').format('YYYY-MM-DD');
     const weekEnd = dayjs().endOf('week').format('YYYY-MM-DD');
-
     const todayRecords = db.getRecordsByDateRange(today, today);
     const missing = db.getMissingToday(today);
     const weeklySummary = db.getWeeklySummary(weekStart, weekEnd);
     const users = db.getAllUsers();
     const tracked = db.getTrackedUsers();
-
     res.send(renderDashboard({ todayRecords, missing, weeklySummary, users, tracked, today }));
   });
 
@@ -25,34 +24,25 @@ const setupDashboard = (boltApp) => {
     const { from, to, user } = req.query;
     const startDate = from || dayjs().startOf('month').format('YYYY-MM-DD');
     const endDate = to || dayjs().format('YYYY-MM-DD');
-
-    const records = user
-      ? db.getUserRecordsByDateRange(user, startDate, endDate)
-      : db.getRecordsByDateRange(startDate, endDate);
-
+    const records = user ? db.getUserRecordsByDateRange(user, startDate, endDate) : db.getRecordsByDateRange(startDate, endDate);
     const users = db.getAllUsers();
     res.send(renderRecords({ records, users, startDate, endDate, selectedUser: user }));
   });
 
-  // ─── Activity page ───────────────────────────────────────────────
+  // ─── Activity ────────────────────────────────────────────────────
   router.get('/activity', (req, res) => {
     const { from, to } = req.query;
     const startDate = from || dayjs().startOf('week').format('YYYY-MM-DD');
     const endDate = to || dayjs().format('YYYY-MM-DD');
-
     const pingSummary = db.getPingSummary(startDate, endDate);
-    const pings = db.getPingsByDateRange(startDate, endDate);
     const tracked = db.getTrackedUsers();
-
-    const presenceData = tracked.map(u => {
-      const ps = db.getPresenceSummary(u.slack_id, startDate, endDate);
-      return { ...ps, name: u.name, real_name: u.real_name, slack_id: u.slack_id };
-    }).filter(p => p.total_checks > 0);
-
-    res.send(renderActivity({ pingSummary, pings, presenceData, startDate, endDate }));
+    const presenceData = tracked
+      .map(u => ({ ...db.getPresenceSummary(u.slack_id, startDate, endDate), name: u.name, real_name: u.real_name, slack_id: u.slack_id }))
+      .filter(p => p.total_checks > 0);
+    res.send(renderActivity({ pingSummary, presenceData, startDate, endDate }));
   });
 
-  // ─── Users management page ───────────────────────────────────────
+  // ─── Users ───────────────────────────────────────────────────────
   router.get('/users', (req, res) => {
     const users = db.getAllUsers();
     const tracked = db.getTrackedUsers();
@@ -60,14 +50,17 @@ const setupDashboard = (boltApp) => {
     res.send(renderUsers({ users, tracked, admins }));
   });
 
-  // ─── APIs ────────────────────────────────────────────────────────
+  // ─── PIN API (for auto-refresh) ─────────────────────────────────
+  router.get('/api/pin', (req, res) => {
+    res.json({ pin: verify.getCurrentPin(), ttl: verify.getSecondsUntilRotation() });
+  });
+
+  // ─── JSON APIs ───────────────────────────────────────────────────
   router.get('/api/records', (req, res) => {
     const { from, to, user } = req.query;
     const startDate = from || dayjs().startOf('month').format('YYYY-MM-DD');
     const endDate = to || dayjs().format('YYYY-MM-DD');
-    const records = user
-      ? db.getUserRecordsByDateRange(user, startDate, endDate)
-      : db.getRecordsByDateRange(startDate, endDate);
+    const records = user ? db.getUserRecordsByDateRange(user, startDate, endDate) : db.getRecordsByDateRange(startDate, endDate);
     res.json({ records, startDate, endDate });
   });
 
@@ -78,22 +71,92 @@ const setupDashboard = (boltApp) => {
     res.json({ summary: db.getWeeklySummary(startDate, endDate), startDate, endDate });
   });
 
-  router.get('/api/activity', (req, res) => {
-    const { from, to } = req.query;
-    const startDate = from || dayjs().startOf('week').format('YYYY-MM-DD');
-    const endDate = to || dayjs().format('YYYY-MM-DD');
-    res.json({
-      pingSummary: db.getPingSummary(startDate, endDate),
-      pings: db.getPingsByDateRange(startDate, endDate),
-    });
+  boltApp.receiver.app.use('/dashboard', router);
+
+  // ═══════════════════════════════════════════════════════════════════
+  // VERIFICATION ROUTES (mounted at root, not under /dashboard)
+  // ═══════════════════════════════════════════════════════════════════
+
+  const verifyRouter = express.Router();
+  verifyRouter.use(express.urlencoded({ extended: true }));
+
+  // GET /verify/:token — Show verification page
+  verifyRouter.get('/:token', (req, res) => {
+    const { token } = req.params;
+    const ua = req.headers['user-agent'] || '';
+
+    // Check if token is valid
+    const slackId = verify.peekToken(token);
+    if (!slackId) {
+      res.send(renderVerifyError('Link expirado', 'Este link ya fue usado o expiró. Generá uno nuevo con /asistencia en Slack.'));
+      return;
+    }
+
+    // Check User-Agent
+    if (verify.isMobileUA(ua)) {
+      res.send(renderVerifyError('Dispositivo no permitido', 'Este registro solo funciona desde un navegador de escritorio. Abrí el link desde tu computadora.'));
+      return;
+    }
+
+    // Show attendance form
+    const today = dayjs().format('YYYY-MM-DD');
+    const user = db.getUser(slackId);
+    const record = db.getOrCreateRecord(slackId, today);
+    res.send(renderVerifyForm({ token, user, record, today }));
   });
 
-  boltApp.receiver.app.use('/dashboard', router);
-  console.log(`[dashboard] Available at /dashboard`);
+  // POST /verify/:token — Process registration
+  verifyRouter.post('/:token', (req, res) => {
+    const { token } = req.params;
+    const { pin, action_type, time_value, use_now } = req.body;
+    const ua = req.headers['user-agent'] || '';
+
+    // Re-check UA
+    if (verify.isMobileUA(ua)) {
+      res.send(renderVerifyError('Dispositivo no permitido', 'Este registro solo funciona desde un navegador de escritorio.'));
+      return;
+    }
+
+    // Consume token (one-time use)
+    const slackId = verify.consumeToken(token);
+    if (!slackId) {
+      res.send(renderVerifyError('Link expirado', 'Este link ya fue usado o expiró. Generá uno nuevo con /asistencia en Slack.'));
+      return;
+    }
+
+    // Verify PIN
+    if (!verify.verifyPin(pin)) {
+      res.send(renderVerifyError('PIN incorrecto', 'El PIN que ingresaste no coincide con el actual. Revisá el número en el dashboard y volvé a intentar con /asistencia.'));
+      return;
+    }
+
+    // Determine time
+    const today = dayjs().format('YYYY-MM-DD');
+    const time = use_now === '1' ? dayjs().format('HH:mm') : time_value;
+
+    if (!action_type || !time) {
+      res.send(renderVerifyError('Datos incompletos', 'Faltó seleccionar la acción o la hora.'));
+      return;
+    }
+
+    // Register
+    try {
+      const record = db.updateField(slackId, today, action_type, time);
+      const user = db.getUser(slackId);
+      res.send(renderVerifySuccess({ user, record, action_type, time }));
+    } catch (err) {
+      res.send(renderVerifyError('Error', err.message));
+    }
+  });
+
+  boltApp.receiver.app.use('/verify', verifyRouter);
+
+  console.log('[dashboard] Available at /dashboard');
+  console.log('[verify] Verification routes at /verify/:token');
 };
 
 // ═══════════════════════════════════════════════════════════════════
-// HTML STYLES
+// STYLES
 // ═══════════════════════════════════════════════════════════════════
 
 const STYLES = `
@@ -115,8 +178,7 @@ const STYLES = `
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; }
   .card h3 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 0.5rem; }
   .card .value { font-size: 2rem; font-weight: 700; }
-  .card .value.green { color: var(--green); } .card .value.yellow { color: var(--yellow); }
-  .card .value.red { color: var(--red); }
+  .card .value.green { color: var(--green); } .card .value.yellow { color: var(--yellow); } .card .value.red { color: var(--red); }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
   th { text-align: left; padding: 0.75rem 1rem; color: var(--text-muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 1px solid var(--border); font-weight: 500; }
   td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); }
@@ -135,68 +197,93 @@ const STYLES = `
   .empty { color: var(--text-muted); text-align: center; padding: 3rem; }
   .progress { background: var(--surface-2); border-radius: 4px; height: 8px; overflow: hidden; margin-top: 0.25rem; }
   .progress-bar { height: 100%; border-radius: 4px; transition: width 0.3s; }
-  .progress-bar.green { background: var(--green); }
-  .progress-bar.yellow { background: var(--yellow); }
-  .progress-bar.red { background: var(--red); }
+  .progress-bar.green { background: var(--green); } .progress-bar.yellow { background: var(--yellow); } .progress-bar.red { background: var(--red); }
+
+  /* PIN display */
+  .pin-box { background: var(--surface); border: 2px solid var(--accent); border-radius: 12px; padding: 1.5rem; text-align: center; }
+  .pin-code { font-size: 3rem; font-weight: 700; color: var(--accent-light); letter-spacing: 0.5em; margin: 0.5rem 0; }
+  .pin-ttl { font-size: 0.8rem; color: var(--text-muted); }
+
+  /* Verify page */
+  .verify-container { max-width: 480px; margin: 4rem auto; padding: 2rem; }
+  .verify-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 2rem; }
+  .verify-card h2 { font-size: 1.2rem; color: var(--accent-light); margin-bottom: 1.5rem; text-align: center; }
+  .form-group { margin-bottom: 1.25rem; }
+  .form-group label { display: block; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 0.4rem; }
+  .form-group select, .form-group input { width: 100%; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); padding: 0.6rem 0.75rem; border-radius: 6px; font-family: inherit; font-size: 0.9rem; }
+  .form-group input.pin-input { font-size: 1.8rem; text-align: center; letter-spacing: 0.5em; font-weight: 700; padding: 0.75rem; }
+  .btn-primary { width: 100%; background: var(--accent); color: white; border: none; padding: 0.75rem; border-radius: 6px; font-family: inherit; font-size: 1rem; font-weight: 600; cursor: pointer; margin-top: 0.5rem; }
+  .btn-primary:hover { opacity: 0.9; }
+  .btn-secondary { width: 100%; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); padding: 0.75rem; border-radius: 6px; font-family: inherit; font-size: 0.9rem; cursor: pointer; margin-top: 0.5rem; }
+  .btn-secondary:hover { background: var(--border); }
+  .status-row { display: flex; justify-content: space-between; padding: 0.4rem 0; font-size: 0.85rem; border-bottom: 1px solid var(--border); }
+  .status-row:last-child { border-bottom: none; }
+  .error-box { background: rgba(255,107,107,0.1); border: 1px solid var(--red); border-radius: 8px; padding: 2rem; text-align: center; }
+  .error-box h2 { color: var(--red); margin-bottom: 0.5rem; }
+  .success-box { background: rgba(0,184,148,0.1); border: 1px solid var(--green); border-radius: 8px; padding: 2rem; text-align: center; }
+  .success-box h2 { color: var(--green); margin-bottom: 0.5rem; }
+  .or-divider { text-align: center; color: var(--text-muted); font-size: 0.8rem; margin: 0.75rem 0; }
 </style>
 `;
 
 const layout = (title, nav, body) => `
-<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+<!DOCTYPE html><html lang="es"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${title} — Hoopla Asistencia</title>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   ${STYLES}
-</head>
-<body>
-  <div class="container">
-    <header>
-      <h1>⚡ hoopla::asistencia</h1>
-      <nav>
-        <a href="/dashboard" class="${nav === 'home' ? 'active' : ''}">Dashboard</a>
-        <a href="/dashboard/records" class="${nav === 'records' ? 'active' : ''}">Registros</a>
-        <a href="/dashboard/activity" class="${nav === 'activity' ? 'active' : ''}">Actividad</a>
-        <a href="/dashboard/users" class="${nav === 'users' ? 'active' : ''}">Usuarios</a>
-      </nav>
-    </header>
-    ${body}
-  </div>
-</body>
-</html>
-`;
+</head><body><div class="container">
+  <header>
+    <h1>⚡ hoopla::asistencia</h1>
+    <nav>
+      <a href="/dashboard" class="${nav === 'home' ? 'active' : ''}">Dashboard</a>
+      <a href="/dashboard/records" class="${nav === 'records' ? 'active' : ''}">Registros</a>
+      <a href="/dashboard/activity" class="${nav === 'activity' ? 'active' : ''}">Actividad</a>
+      <a href="/dashboard/users" class="${nav === 'users' ? 'active' : ''}">Usuarios</a>
+    </nav>
+  </header>
+  ${body}
+</div></body></html>`;
+
+const miniLayout = (title, body) => `
+<!DOCTYPE html><html lang="es"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${title} — Hoopla Asistencia</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  ${STYLES}
+</head><body><div class="verify-container">${body}</div></body></html>`;
 
 // ═══════════════════════════════════════════════════════════════════
-// DASHBOARD HOME
+// DASHBOARD HOME (with PIN)
 // ═══════════════════════════════════════════════════════════════════
 
 const renderDashboard = ({ todayRecords, missing, weeklySummary, users, tracked, today }) => {
   const presentCount = todayRecords.length;
   const completeCount = todayRecords.filter(r => r.exit_time).length;
   const weeklyHours = weeklySummary.reduce((sum, r) => sum + (r.total_hours || 0), 0);
+  const pin = verify.getCurrentPin();
+  const ttl = verify.getSecondsUntilRotation();
 
   const todayRows = todayRecords.map(r => `
     <tr>
-      <td>${r.real_name || r.name}</td>
-      <td>${r.entry_time || '—'}</td>
+      <td>${r.real_name || r.name}</td><td>${r.entry_time || '—'}</td>
       <td>${r.lunch_start || '—'} – ${r.lunch_end || '—'}</td>
-      <td>${r.exit_time || '—'}</td>
-      <td>${r.total_hours ? r.total_hours + 'hs' : '—'}</td>
+      <td>${r.exit_time || '—'}</td><td>${r.total_hours ? r.total_hours + 'hs' : '—'}</td>
       <td><span class="badge ${r.exit_time ? 'complete' : 'partial'}">${r.exit_time ? 'Completo' : 'En curso'}</span></td>
-    </tr>
-  `).join('');
+    </tr>`).join('');
 
   const missingRows = missing.map(u => `
-    <tr><td>${u.real_name || u.name}</td><td><span class="badge missing">Sin registro</span></td></tr>
-  `).join('');
+    <tr><td>${u.real_name || u.name}</td><td><span class="badge missing">Sin registro</span></td></tr>`).join('');
 
   return layout('Dashboard', 'home', `
     <div class="grid">
+      <div class="pin-box">
+        <h3 style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:0.25rem;">PIN de registro</h3>
+        <div class="pin-code" id="pin-display">${pin}</div>
+        <div class="pin-ttl">Cambia en <span id="pin-ttl">${ttl}</span>s</div>
+      </div>
       <div class="card"><h3>Trackeados</h3><div class="value">${tracked.length}</div></div>
       <div class="card"><h3>Presentes hoy</h3><div class="value green">${presentCount}</div></div>
-      <div class="card"><h3>Jornada completa</h3><div class="value ${completeCount === presentCount ? 'green' : 'yellow'}">${completeCount}</div></div>
       <div class="card"><h3>Sin registro</h3><div class="value ${missing.length > 0 ? 'red' : 'green'}">${missing.length}</div></div>
       <div class="card"><h3>Horas equipo (semana)</h3><div class="value">${Math.round(weeklyHours * 10) / 10}</div></div>
     </div>
@@ -212,135 +299,218 @@ const renderDashboard = ({ todayRecords, missing, weeklySummary, users, tracked,
     ${missing.length > 0 ? `<div class="card"><h3>⚠️ Faltantes</h3>
       <table><thead><tr><th>Persona</th><th>Estado</th></tr></thead><tbody>${missingRows}</tbody></table>
     </div>` : ''}
+
+    <script>
+      let ttl = ${ttl};
+      setInterval(() => {
+        ttl--;
+        if (ttl <= 0) {
+          fetch('/dashboard/api/pin').then(r => r.json()).then(d => {
+            document.getElementById('pin-display').textContent = d.pin;
+            ttl = d.ttl;
+          });
+        }
+        document.getElementById('pin-ttl').textContent = Math.max(0, ttl);
+      }, 1000);
+    </script>
   `);
 };
 
 // ═══════════════════════════════════════════════════════════════════
-// RECORDS
+// RECORDS PAGE
 // ═══════════════════════════════════════════════════════════════════
 
 const renderRecords = ({ records, users, startDate, endDate, selectedUser }) => {
-  const userOptions = users.map(u =>
+  const userOpts = users.map(u =>
     `<option value="${u.slack_id}" ${selectedUser === u.slack_id ? 'selected' : ''}>${u.real_name || u.name}</option>`
   ).join('');
-
   const rows = records.map(r => {
-    const status = r.exit_time ? 'complete' : (r.entry_time ? 'partial' : 'missing');
-    const label = r.exit_time ? 'Completo' : (r.entry_time ? 'Parcial' : 'Sin datos');
-    return `<tr>
-      <td>${dayjs(r.date).format('DD/MM/YYYY')}</td><td>${r.real_name || r.name}</td>
+    const st = r.exit_time ? 'complete' : (r.entry_time ? 'partial' : 'missing');
+    const lb = r.exit_time ? 'Completo' : (r.entry_time ? 'Parcial' : 'Sin datos');
+    return `<tr><td>${dayjs(r.date).format('DD/MM/YYYY')}</td><td>${r.real_name || r.name}</td>
       <td>${r.entry_time || '—'}</td><td>${r.lunch_start || '—'}</td><td>${r.lunch_end || '—'}</td>
       <td>${r.exit_time || '—'}</td><td>${r.total_hours ? r.total_hours + 'hs' : '—'}</td>
-      <td><span class="badge ${status}">${label}</span></td>
-    </tr>`;
+      <td><span class="badge ${st}">${lb}</span></td></tr>`;
   }).join('');
-
   return layout('Registros', 'records', `
     <form class="filters" method="GET" action="/dashboard/records">
       <div><label>Desde</label><input type="date" name="from" value="${startDate}"></div>
       <div><label>Hasta</label><input type="date" name="to" value="${endDate}"></div>
-      <div><label>Persona</label><select name="user"><option value="">Todas</option>${userOptions}</select></div>
+      <div><label>Persona</label><select name="user"><option value="">Todas</option>${userOpts}</select></div>
       <button type="submit">Filtrar</button>
     </form>
-    <div class="card">
-      ${records.length > 0 ? `<table><thead><tr>
-        <th>Fecha</th><th>Persona</th><th>Entrada</th><th>Almuerzo ini</th><th>Almuerzo fin</th><th>Salida</th><th>Horas</th><th>Estado</th>
-      </tr></thead><tbody>${rows}</tbody></table>`
-      : '<p class="empty">No hay registros para el período seleccionado</p>'}
-    </div>
-  `);
+    <div class="card">${records.length > 0 ? `<table><thead><tr>
+      <th>Fecha</th><th>Persona</th><th>Entrada</th><th>Almuerzo ini</th><th>Almuerzo fin</th><th>Salida</th><th>Horas</th><th>Estado</th>
+    </tr></thead><tbody>${rows}</tbody></table>` : '<p class="empty">No hay registros</p>'}</div>`);
 };
 
 // ═══════════════════════════════════════════════════════════════════
-// ACTIVITY
+// ACTIVITY PAGE
 // ═══════════════════════════════════════════════════════════════════
 
-const renderActivity = ({ pingSummary, pings, presenceData, startDate, endDate }) => {
+const renderActivity = ({ pingSummary, presenceData, startDate, endDate }) => {
   const pingRows = pingSummary.map(r => {
     const rate = r.total_pings > 0 ? Math.round((r.responded / r.total_pings) * 100) : 0;
-    const avgSec = r.avg_response_ms ? Math.round(r.avg_response_ms / 1000) : '—';
-    const barColor = rate >= 70 ? 'green' : rate >= 50 ? 'yellow' : 'red';
-    return `<tr>
-      <td>${r.real_name || r.name}</td>
-      <td>${r.total_pings}</td><td>${r.responded}</td><td>${r.missed}</td>
-      <td>${rate}% <div class="progress"><div class="progress-bar ${barColor}" style="width:${rate}%"></div></div></td>
-      <td>${avgSec}s</td>
-    </tr>`;
+    const avg = r.avg_response_ms ? Math.round(r.avg_response_ms / 1000) : '—';
+    const c = rate >= 70 ? 'green' : rate >= 50 ? 'yellow' : 'red';
+    return `<tr><td>${r.real_name || r.name}</td><td>${r.total_pings}</td><td>${r.responded}</td><td>${r.missed}</td>
+      <td>${rate}% <div class="progress"><div class="progress-bar ${c}" style="width:${rate}%"></div></div></td><td>${avg}s</td></tr>`;
   }).join('');
-
-  const presenceRows = presenceData.map(r => {
-    const pct = r.active_pct || 0;
-    const barColor = pct >= 70 ? 'green' : pct >= 50 ? 'yellow' : 'red';
-    return `<tr>
-      <td>${r.real_name || r.name}</td>
-      <td>${r.total_checks}</td><td>${r.active_count}</td><td>${r.away_count}</td>
-      <td>${pct}% <div class="progress"><div class="progress-bar ${barColor}" style="width:${pct}%"></div></div></td>
-    </tr>`;
+  const presRows = presenceData.map(r => {
+    const p = r.active_pct || 0; const c = p >= 70 ? 'green' : p >= 50 ? 'yellow' : 'red';
+    return `<tr><td>${r.real_name || r.name}</td><td>${r.total_checks}</td><td>${r.active_count}</td><td>${r.away_count}</td>
+      <td>${p}% <div class="progress"><div class="progress-bar ${c}" style="width:${p}%"></div></div></td></tr>`;
   }).join('');
-
   return layout('Actividad', 'activity', `
     <form class="filters" method="GET" action="/dashboard/activity">
       <div><label>Desde</label><input type="date" name="from" value="${startDate}"></div>
       <div><label>Hasta</label><input type="date" name="to" value="${endDate}"></div>
       <button type="submit">Filtrar</button>
     </form>
-
-    <div class="card" style="margin-bottom:1.5rem">
-      <h3>🏓 Pings de actividad</h3>
-      ${pingSummary.length > 0 ? `<table><thead><tr>
-        <th>Persona</th><th>Enviados</th><th>Respondidos</th><th>Perdidos</th><th>Tasa</th><th>Promedio</th>
-      </tr></thead><tbody>${pingRows}</tbody></table>`
-      : '<p class="empty">No hay datos de pings para el período</p>'}
+    <div class="card" style="margin-bottom:1.5rem"><h3>🏓 Pings de actividad</h3>
+      ${pingSummary.length > 0 ? `<table><thead><tr><th>Persona</th><th>Enviados</th><th>OK</th><th>Perdidos</th><th>Tasa</th><th>Promedio</th></tr></thead><tbody>${pingRows}</tbody></table>` : '<p class="empty">Sin datos</p>'}
     </div>
-
-    <div class="card">
-      <h3>👁️ Presencia Slack</h3>
-      ${presenceData.length > 0 ? `<table><thead><tr>
-        <th>Persona</th><th>Checks</th><th>Active</th><th>Away</th><th>Presencia</th>
-      </tr></thead><tbody>${presenceRows}</tbody></table>`
-      : '<p class="empty">No hay datos de presencia para el período</p>'}
-    </div>
-  `);
+    <div class="card"><h3>👁️ Presencia Slack</h3>
+      ${presenceData.length > 0 ? `<table><thead><tr><th>Persona</th><th>Checks</th><th>Active</th><th>Away</th><th>Presencia</th></tr></thead><tbody>${presRows}</tbody></table>` : '<p class="empty">Sin datos</p>'}
+    </div>`);
 };
 
 // ═══════════════════════════════════════════════════════════════════
-// USERS
+// USERS PAGE
 // ═══════════════════════════════════════════════════════════════════
 
 const renderUsers = ({ users, tracked, admins }) => {
-  const trackedIds = new Set(tracked.map(u => u.slack_id));
-  const adminIds = new Set(admins.map(u => u.slack_id));
-
+  const tIds = new Set(tracked.map(u => u.slack_id));
+  const aIds = new Set(admins.map(u => u.slack_id));
   const rows = users.map(u => {
-    const badges = [];
-    if (adminIds.has(u.slack_id)) badges.push('<span class="badge admin">Admin</span>');
-    if (trackedIds.has(u.slack_id)) badges.push('<span class="badge tracked">Trackeado</span>');
-    return `<tr>
-      <td>${u.real_name || u.name}</td>
-      <td style="font-size:0.75rem;color:var(--text-muted)">${u.slack_id}</td>
-      <td>${badges.join(' ') || '<span style="color:var(--text-muted)">—</span>'}</td>
-      <td style="font-size:0.75rem;color:var(--text-muted)">${u.created_at || '—'}</td>
-    </tr>`;
+    const b = [];
+    if (aIds.has(u.slack_id)) b.push('<span class="badge admin">Admin</span>');
+    if (tIds.has(u.slack_id)) b.push('<span class="badge tracked">Trackeado</span>');
+    return `<tr><td>${u.real_name || u.name}</td><td style="font-size:0.75rem;color:var(--text-muted)">${u.slack_id}</td>
+      <td>${b.join(' ') || '—'}</td><td style="font-size:0.75rem;color:var(--text-muted)">${u.created_at || '—'}</td></tr>`;
   }).join('');
-
   return layout('Usuarios', 'users', `
     <div class="grid">
-      <div class="card"><h3>Total usuarios</h3><div class="value">${users.length}</div></div>
+      <div class="card"><h3>Total</h3><div class="value">${users.length}</div></div>
       <div class="card"><h3>Trackeados</h3><div class="value green">${tracked.length}</div></div>
       <div class="card"><h3>Admins</h3><div class="value" style="color:var(--accent-light)">${admins.length}</div></div>
     </div>
+    <div class="card"><h3>Todos los usuarios</h3>
+      <p style="font-size:0.8rem;color:var(--text-muted);margin-bottom:1rem">Gestión: <code>/admin agregar @usuario</code> · <code>/admin sacar @usuario</code></p>
+      ${users.length > 0 ? `<table><thead><tr><th>Nombre</th><th>Slack ID</th><th>Rol</th><th>Desde</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="empty">Sin usuarios</p>'}
+    </div>`);
+};
 
-    <div class="card">
-      <h3>Todos los usuarios</h3>
-      <p style="font-size:0.8rem;color:var(--text-muted);margin-bottom:1rem">
-        Gestión vía Slack: <code>/admin agregar @usuario</code> · <code>/admin sacar @usuario</code>
-      </p>
-      ${users.length > 0 ? `<table><thead><tr>
-        <th>Nombre</th><th>Slack ID</th><th>Rol</th><th>Desde</th>
-      </tr></thead><tbody>${rows}</tbody></table>`
-      : '<p class="empty">No hay usuarios registrados</p>'}
+// ═══════════════════════════════════════════════════════════════════
+// VERIFICATION PAGES
+// ═══════════════════════════════════════════════════════════════════
+
+const STATUS_LABELS = {
+  entry_time: '🟢 Entrada',
+  lunch_start: '🍽️ Inicio almuerzo',
+  lunch_end: '🔄 Fin almuerzo',
+  exit_time: '🔴 Salida',
+};
+
+const getNextAction = (record) => {
+  if (!record || !record.entry_time) return 'entry_time';
+  if (!record.lunch_start) return 'lunch_start';
+  if (!record.lunch_end) return 'lunch_end';
+  if (!record.exit_time) return 'exit_time';
+  return null;
+};
+
+const renderVerifyForm = ({ token, user, record, today }) => {
+  const nextAction = getNextAction(record);
+  const name = user?.real_name || user?.name || 'Usuario';
+
+  if (!nextAction) {
+    return miniLayout('Día completo', `
+      <div class="success-box">
+        <h2>✅ Día completo</h2>
+        <p>${name}, ya tenés todas las marcaciones registradas para hoy.</p>
+      </div>`);
+  }
+
+  const statusRows = Object.entries(STATUS_LABELS).map(([field, label]) =>
+    `<div class="status-row"><span>${label}</span><span>${record[field] || '—'}</span></div>`
+  ).join('');
+
+  // Time options
+  const timeOptions = [];
+  for (let h = 7; h <= 22; h++) {
+    for (const m of ['00', '15', '30', '45']) {
+      const t = `${String(h).padStart(2, '0')}:${m}`;
+      const sel = t === dayjs().format('HH:mm') ? 'selected' : '';
+      timeOptions.push(`<option value="${t}" ${sel}>${t}</option>`);
+    }
+  }
+
+  // Available actions (only pending ones)
+  const actionOptions = Object.entries(STATUS_LABELS)
+    .filter(([field]) => !record[field])
+    .map(([field, label]) => {
+      const sel = field === nextAction ? 'selected' : '';
+      return `<option value="${field}" ${sel}>${label}</option>`;
+    }).join('');
+
+  return miniLayout('Registrar asistencia', `
+    <div class="verify-card">
+      <h2>📋 ${name}</h2>
+      <p style="text-align:center;color:var(--text-muted);font-size:0.85rem;margin-bottom:1.25rem">${dayjs(today).format('DD/MM/YYYY')}</p>
+
+      <div style="margin-bottom:1.25rem">${statusRows}</div>
+
+      <form method="POST" action="/verify/${token}" id="verify-form">
+        <div class="form-group">
+          <label>Acción</label>
+          <select name="action_type">${actionOptions}</select>
+        </div>
+
+        <input type="hidden" name="use_now" value="0" id="use-now-field">
+
+        <div class="form-group" id="time-group">
+          <label>Hora</label>
+          <select name="time_value">${timeOptions.join('')}</select>
+        </div>
+
+        <button type="button" class="btn-secondary" onclick="document.getElementById('use-now-field').value='1'; document.getElementById('time-group').style.display='none'; this.style.background='var(--green)'; this.style.color='var(--bg)'; this.textContent='⏱️ Hora actual seleccionada (${dayjs().format('HH:mm')})'; this.disabled=true;">
+          ⏱️ Usar hora actual (${dayjs().format('HH:mm')})
+        </button>
+
+        <div class="or-divider">— ingresá el PIN del dashboard —</div>
+
+        <div class="form-group">
+          <label>PIN</label>
+          <input type="text" name="pin" class="pin-input" maxlength="4" pattern="[0-9]{4}" placeholder="0000" required autocomplete="off" inputmode="numeric">
+        </div>
+
+        <button type="submit" class="btn-primary">✅ Registrar</button>
+      </form>
+    </div>`);
+};
+
+const renderVerifyError = (title, message) => miniLayout('Error', `
+  <div class="error-box">
+    <h2>❌ ${title}</h2>
+    <p style="margin-top:0.75rem">${message}</p>
+  </div>`);
+
+const renderVerifySuccess = ({ user, record, action_type, time }) => {
+  const name = user?.real_name || user?.name || 'Usuario';
+  const label = STATUS_LABELS[action_type] || action_type;
+
+  const statusRows = Object.entries(STATUS_LABELS).map(([field, lb]) =>
+    `<div class="status-row"><span>${lb}</span><span style="${field === action_type ? 'color:var(--green);font-weight:700' : ''}">${record[field] || '—'}</span></div>`
+  ).join('');
+
+  return miniLayout('Registrado', `
+    <div class="success-box">
+      <h2>✅ Registrado</h2>
+      <p style="margin-top:0.5rem"><strong>${label}</strong> a las <strong>${time}</strong></p>
+      <p style="color:var(--text-muted);font-size:0.85rem;margin-top:0.25rem">${name} — ${dayjs().format('DD/MM/YYYY')}</p>
     </div>
-  `);
+    <div class="verify-card" style="margin-top:1rem">${statusRows}</div>`);
 };
 
 module.exports = { setupDashboard };

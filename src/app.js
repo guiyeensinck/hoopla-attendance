@@ -5,6 +5,7 @@ const db = require('./database');
 const blocks = require('./blocks');
 const { setupScheduler } = require('./scheduler');
 const { setupDashboard } = require('./dashboard');
+const { createToken } = require('./verification');
 
 // ─── Express receiver ──────────────────────────────────────────────
 const receiver = new ExpressReceiver({
@@ -29,90 +30,52 @@ if (SOLO_MODE) {
   });
 }
 
-// ─── Pending selections state ──────────────────────────────────────
-const pendingSelections = new Map();
+// ─── Base URL for links ────────────────────────────────────────────
+const getBaseUrl = () => {
+  if (process.env.APP_URL) return process.env.APP_URL;
+  const port = process.env.PORT || 3000;
+  return `http://localhost:${port}`;
+};
 
 // ═══════════════════════════════════════════════════════════════════
-// /asistencia
+// /asistencia — Returns a verification link
 // ═══════════════════════════════════════════════════════════════════
 
-app.command('/asistencia', async ({ command, ack, respond }) => {
-  await ack();
+app.command('/asistencia', async ({ command, ack }) => {
   const { user_id, user_name } = command;
-  const today = dayjs().format('YYYY-MM-DD');
 
   db.upsertUser({ slack_id: user_id, name: user_name, real_name: user_name });
-  const record = db.getOrCreateRecord(user_id, today);
 
-  await respond({
+  const token = createToken(user_id);
+  const url = `${getBaseUrl()}/verify/${token}`;
+
+  await ack({
     response_type: 'ephemeral',
-    blocks: blocks.buildAttendanceMenu(record),
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// ATTENDANCE ACTIONS
-// ═══════════════════════════════════════════════════════════════════
-
-app.action('select_action_type', async ({ action, body, ack }) => {
-  await ack();
-  const current = pendingSelections.get(body.user.id) || {};
-  pendingSelections.set(body.user.id, { ...current, actionType: action.selected_option.value });
-});
-
-app.action('select_time', async ({ action, body, ack }) => {
-  await ack();
-  const current = pendingSelections.get(body.user.id) || {};
-  pendingSelections.set(body.user.id, { ...current, time: action.selected_option.value });
-});
-
-app.action('confirm_attendance', async ({ action, body, ack, respond }) => {
-  await ack();
-  const userId = body.user.id;
-  const today = action.value;
-  const pending = pendingSelections.get(userId);
-
-  if (!pending || !pending.actionType || !pending.time) {
-    await respond({ response_type: 'ephemeral', text: '⚠️ Seleccioná qué registrar y la hora antes de confirmar.', replace_original: false });
-    return;
-  }
-
-  db.upsertUser({ slack_id: userId, name: body.user.username || body.user.name, real_name: body.user.username || body.user.name });
-  const record = db.updateField(userId, today, pending.actionType, pending.time);
-  const confirmation = blocks.buildConfirmation(pending.actionType, pending.time);
-  pendingSelections.delete(userId);
-
-  await respond({
-    response_type: 'ephemeral',
-    blocks: [...confirmation, { type: 'divider' }, ...blocks.buildAttendanceMenu(record)],
-    replace_original: true,
-  });
-});
-
-app.action('register_now', async ({ action, body, ack, respond }) => {
-  await ack();
-  const userId = body.user.id;
-  const today = action.value;
-  const now = dayjs().format('HH:mm');
-
-  db.upsertUser({ slack_id: userId, name: body.user.username || body.user.name, real_name: body.user.username || body.user.name });
-  const currentRecord = db.getOrCreateRecord(userId, today);
-  const pending = pendingSelections.get(userId);
-  const actionType = pending?.actionType || blocks.getNextAction(currentRecord);
-
-  if (!actionType) {
-    await respond({ response_type: 'ephemeral', text: '✅ Ya tenés el día completo registrado.', replace_original: false });
-    return;
-  }
-
-  const record = db.updateField(userId, today, actionType, now);
-  const confirmation = blocks.buildConfirmation(actionType, now);
-  pendingSelections.delete(userId);
-
-  await respond({
-    response_type: 'ephemeral',
-    blocks: [...confirmation, { type: 'divider' }, ...blocks.buildAttendanceMenu(record)],
-    replace_original: true,
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: '📋 *Registro de asistencia*',
+        },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `Abrí este link *desde tu computadora* para registrar tu asistencia:\n\n👉 <${url}|Registrar asistencia>`,
+        },
+      },
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: '⏱️ El link expira en 2 minutos. Solo funciona desde un navegador de escritorio.',
+          },
+        ],
+      },
+    ],
   });
 });
 
@@ -120,8 +83,7 @@ app.action('register_now', async ({ action, body, ack, respond }) => {
 // /reporte
 // ═══════════════════════════════════════════════════════════════════
 
-app.command('/reporte', async ({ command, ack, respond }) => {
-  await ack();
+app.command('/reporte', async ({ command, ack }) => {
   const args = command.text.trim().toLowerCase();
   let startDate, endDate;
 
@@ -134,20 +96,21 @@ app.command('/reporte', async ({ command, ack, respond }) => {
   }
 
   const summary = db.getWeeklySummary(startDate, endDate);
-  await respond({ response_type: 'ephemeral', blocks: blocks.buildWeeklyReport(summary, startDate, endDate) });
+  await ack({
+    response_type: 'ephemeral',
+    blocks: blocks.buildWeeklyReport(summary, startDate, endDate),
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// /admin — User roster management
+// /admin
 // ═══════════════════════════════════════════════════════════════════
 
-app.command('/admin', async ({ command, ack, respond, client }) => {
-  await ack();
+app.command('/admin', async ({ command, ack, client }) => {
   const userId = command.user_id;
 
-  // Auth check
   if (!db.isAdmin(userId)) {
-    await respond({ response_type: 'ephemeral', text: '🔒 No tenés permisos de administrador.' });
+    await ack({ response_type: 'ephemeral', text: '🔒 No tenés permisos de administrador.' });
     return;
   }
 
@@ -155,7 +118,6 @@ app.command('/admin', async ({ command, ack, respond, client }) => {
   const [action, ...rest] = text.split(/\s+/);
   const mention = rest.join(' ');
 
-  // Extract Slack user ID from mention format <@U12345|name> or raw ID
   const extractUserId = (str) => {
     const match = str.match(/<@([A-Z0-9]+)\|?[^>]*>/);
     if (match) return match[1];
@@ -164,162 +126,102 @@ app.command('/admin', async ({ command, ack, respond, client }) => {
   };
 
   switch (action?.toLowerCase()) {
-
-    // ─── List tracked users ────────────────────────────────────────
     case 'lista':
     case 'list':
+    case undefined:
     case '': {
       const allUsers = db.getAllUsers();
       const tracked = db.getTrackedUsers();
       const trackedIds = tracked.map(u => u.slack_id);
-      await respond({
-        response_type: 'ephemeral',
-        blocks: blocks.buildAdminMenu(allUsers, trackedIds),
-      });
+      await ack({ response_type: 'ephemeral', blocks: blocks.buildAdminMenu(allUsers, trackedIds) });
       break;
     }
 
-    // ─── Add user to tracking ──────────────────────────────────────
     case 'agregar':
     case 'add': {
       const targetId = extractUserId(mention);
-      if (!targetId) {
-        await respond({ response_type: 'ephemeral', text: '⚠️ Usá: `/admin agregar @usuario`' });
-        return;
-      }
-
-      // Fetch user info from Slack to save their real name
+      if (!targetId) { await ack({ response_type: 'ephemeral', text: '⚠️ Usá: `/admin agregar @usuario`' }); return; }
       try {
         const info = await client.users.info({ user: targetId });
-        db.upsertUser({
-          slack_id: targetId,
-          name: info.user.name,
-          real_name: info.user.real_name || info.user.name,
-        });
+        db.upsertUser({ slack_id: targetId, name: info.user.name, real_name: info.user.real_name || info.user.name });
       } catch (e) {
         db.upsertUser({ slack_id: targetId, name: mention, real_name: mention });
       }
-
       db.setTracked(1, targetId);
       const user = db.getUser(targetId);
-      await respond({
-        response_type: 'ephemeral',
-        text: `✅ *${user.real_name || user.name}* agregado al tracking. Va a recibir pings de actividad y debe fichar asistencia.`,
-      });
+      await ack({ response_type: 'ephemeral', text: `✅ *${user.real_name || user.name}* agregado al tracking.` });
       break;
     }
 
-    // ─── Remove user from tracking ─────────────────────────────────
     case 'sacar':
     case 'quitar':
     case 'remove': {
       const targetId = extractUserId(mention);
-      if (!targetId) {
-        await respond({ response_type: 'ephemeral', text: '⚠️ Usá: `/admin sacar @usuario`' });
-        return;
-      }
+      if (!targetId) { await ack({ response_type: 'ephemeral', text: '⚠️ Usá: `/admin sacar @usuario`' }); return; }
       db.setTracked(0, targetId);
       const user = db.getUser(targetId);
-      await respond({
-        response_type: 'ephemeral',
-        text: `✅ *${user?.real_name || targetId}* sacado del tracking.`,
-      });
+      await ack({ response_type: 'ephemeral', text: `✅ *${user?.real_name || targetId}* sacado del tracking.` });
       break;
     }
 
-    // ─── Grant admin ───────────────────────────────────────────────
     case 'admin': {
       const targetId = extractUserId(mention);
-      if (!targetId) {
-        await respond({ response_type: 'ephemeral', text: '⚠️ Usá: `/admin admin @usuario`' });
-        return;
-      }
+      if (!targetId) { await ack({ response_type: 'ephemeral', text: '⚠️ Usá: `/admin admin @usuario`' }); return; }
       try {
         const info = await client.users.info({ user: targetId });
-        db.upsertUser({
-          slack_id: targetId,
-          name: info.user.name,
-          real_name: info.user.real_name || info.user.name,
-        });
+        db.upsertUser({ slack_id: targetId, name: info.user.name, real_name: info.user.real_name || info.user.name });
       } catch (e) {}
-
       db.setAdmin(1, targetId);
       const user = db.getUser(targetId);
-      await respond({
-        response_type: 'ephemeral',
-        text: `✅ *${user?.real_name || targetId}* ahora es admin.`,
-      });
+      await ack({ response_type: 'ephemeral', text: `✅ *${user?.real_name || targetId}* ahora es admin.` });
       break;
     }
 
-    // ─── Activity ping report ──────────────────────────────────────
     case 'actividad':
     case 'pings': {
-      const startDate = dayjs().startOf('week').format('YYYY-MM-DD');
-      const endDate = dayjs().format('YYYY-MM-DD');
-      const summary = db.getPingSummary(startDate, endDate);
-      await respond({
-        response_type: 'ephemeral',
-        blocks: blocks.buildPingSummaryReport(summary, startDate, endDate),
-      });
+      const s = dayjs().startOf('week').format('YYYY-MM-DD');
+      const e = dayjs().format('YYYY-MM-DD');
+      await ack({ response_type: 'ephemeral', blocks: blocks.buildPingSummaryReport(db.getPingSummary(s, e), s, e) });
       break;
     }
 
-    // ─── Presence report ───────────────────────────────────────────
     case 'presencia':
     case 'presence': {
-      const startDate = dayjs().startOf('week').format('YYYY-MM-DD');
-      const endDate = dayjs().format('YYYY-MM-DD');
+      const s = dayjs().startOf('week').format('YYYY-MM-DD');
+      const e = dayjs().format('YYYY-MM-DD');
       const tracked = db.getTrackedUsers();
-      const presenceData = [];
-      for (const u of tracked) {
-        const ps = db.getPresenceSummary(u.slack_id, startDate, endDate);
-        if (ps && ps.total_checks > 0) {
-          presenceData.push({ ...ps, name: u.name, real_name: u.real_name });
-        }
-      }
-      await respond({
-        response_type: 'ephemeral',
-        blocks: blocks.buildPresenceSummaryReport(presenceData, startDate, endDate),
-      });
+      const data = tracked
+        .map(u => ({ ...db.getPresenceSummary(u.slack_id, s, e), name: u.name, real_name: u.real_name }))
+        .filter(p => p.total_checks > 0);
+      await ack({ response_type: 'ephemeral', blocks: blocks.buildPresenceSummaryReport(data, s, e) });
       break;
     }
 
     default:
-      await respond({
-        response_type: 'ephemeral',
-        text: '❓ Comando no reconocido. Usá `/admin lista` para ver opciones.',
-      });
+      await ack({ response_type: 'ephemeral', text: '❓ Comando no reconocido. Usá `/admin lista`.' });
   }
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// ACTIVITY PING RESPONSE
+// ACTIVITY PING RESPONSE (stays in Slack — pings are server-sent)
 // ═══════════════════════════════════════════════════════════════════
 
-app.action('ping_respond', async ({ action, body, ack, respond }) => {
-  await ack();
+app.action('ping_respond', async ({ action, body, ack, client }) => {
   const pingId = parseInt(action.value, 10);
   const result = db.respondToPing(pingId);
+  await ack();
 
+  const channelId = body.channel?.id || body.user.id;
   if (result) {
     const seconds = Math.round(result.response_ms / 1000);
-    await respond({
-      response_type: 'ephemeral',
-      text: `✅ Respuesta registrada en ${seconds}s. ¡Bien ahí!`,
-      replace_original: true,
-    });
+    await client.chat.postEphemeral({ channel: channelId, user: body.user.id, text: `✅ Respuesta registrada en ${seconds}s. ¡Bien ahí!` });
   } else {
-    await respond({
-      response_type: 'ephemeral',
-      text: '⏱️ Este ping ya expiró o ya fue respondido.',
-      replace_original: true,
-    });
+    await client.chat.postEphemeral({ channel: channelId, user: body.user.id, text: '⏱️ Este ping ya expiró o ya fue respondido.' });
   }
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// APP HOME & EVENTS
+// EVENTS
 // ═══════════════════════════════════════════════════════════════════
 
 app.event('app_home_opened', async ({ event, client }) => {
@@ -341,11 +243,7 @@ app.event('app_home_opened', async ({ event, client }) => {
 });
 
 app.event('team_join', async ({ event }) => {
-  db.upsertUser({
-    slack_id: event.user.id,
-    name: event.user.name,
-    real_name: event.user.real_name || event.user.name,
-  });
+  db.upsertUser({ slack_id: event.user.id, name: event.user.name, real_name: event.user.real_name || event.user.name });
 });
 
 // ═══════════════════════════════════════════════════════════════════
