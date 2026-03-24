@@ -442,23 +442,108 @@ const renderVerifyError = (title, message) => miniLayout('Error', `
 
 const renderVerifySuccess = ({ user, record, action_type, time, alreadyComplete }) => {
   const name = user?.real_name || user?.name || 'Usuario';
+  const slackId = user?.slack_id;
+  const today = t.today();
+  const EXPECTED = parseFloat(process.env.EXPECTED_HOURS_PER_DAY || '8');
 
-  if (alreadyComplete) {
-    const statusRows = Object.entries(STATUS_LABELS).map(([field, lb]) =>
-      `<div class="status-row"><span>${lb}</span><span>${record[field] || '—'}</span></div>`
-    ).join('');
-    return miniLayout('Día completo', `
-      <div class="success-box">
-        <h2>✅ Día completo</h2>
-        <p>${name}, ya tenés todas las marcaciones registradas para hoy.</p>
-      </div>
-      <div class="verify-card" style="margin-top:1rem">${statusRows}</div>`);
-  }
-
-  const label = STATUS_LABELS[action_type] || action_type;
+  // Build today's status
   const statusRows = Object.entries(STATUS_LABELS).map(([field, lb]) =>
     `<div class="status-row"><span>${lb}</span><span style="${field === action_type ? 'color:var(--green);font-weight:700' : ''}">${record[field] || '—'}</span></div>`
   ).join('');
+
+  // Weekly breakdown
+  const weekStart = t.weekStart();
+  const weekRecords = slackId ? db.getUserWeeklyRecords(slackId, weekStart, today) : [];
+  const dayNames = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+
+  let weeklyHtml = '';
+  let totalWorked = 0;
+
+  if (weekRecords.length > 0) {
+    const dayRows = weekRecords.map(r => {
+      const hrs = r.total_hours || 0;
+      totalWorked += hrs;
+      const dayNum = t.dayjs(r.date).day();
+      const dayLabel = dayNames[dayNum];
+      const dateLabel = t.dayjs(r.date).format('DD/MM');
+      const isField = r.work_mode === 'field';
+      const wasAuto = r.auto_closed === 1;
+
+      let statusIcon, statusColor, comment;
+      if (hrs >= EXPECTED) {
+        statusIcon = '🟢'; statusColor = 'var(--green)'; comment = 'Perfecto';
+      } else if (hrs >= EXPECTED - 1) {
+        statusIcon = '🟡'; statusColor = 'var(--yellow)'; comment = `${Math.round((EXPECTED - hrs) * 60)} min pendientes`;
+      } else if (hrs > 0) {
+        statusIcon = '🔴'; statusColor = 'var(--red)'; comment = `${Math.round((EXPECTED - hrs) * 10) / 10}hs pendientes`;
+      } else {
+        statusIcon = '⚪'; statusColor = 'var(--text-muted)'; comment = 'Sin registro';
+      }
+
+      if (isField) comment = `🎬 Campo — ${comment}`;
+      if (wasAuto) comment += ' (auto)';
+
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:0.5rem 0;border-bottom:1px solid var(--border);font-size:0.85rem;">
+        <span>${statusIcon} <strong>${dayLabel}</strong> ${dateLabel}</span>
+        <span style="color:${statusColor};font-weight:600">${hrs > 0 ? hrs + 'hs' : '—'}</span>
+        <span style="color:var(--text-muted);font-size:0.75rem;max-width:40%">${comment}</span>
+      </div>`;
+    }).join('');
+
+    const daysElapsed = db.countWorkdaysInRange(weekStart, today);
+    const expectedTotal = Math.round(daysElapsed * EXPECTED * 10) / 10;
+    totalWorked = Math.round(totalWorked * 10) / 10;
+    const diff = Math.round((totalWorked - expectedTotal) * 10) / 10;
+
+    let balanceColor, balanceIcon, balanceMsg;
+    if (diff >= 0) {
+      balanceColor = 'var(--green)';
+      balanceIcon = '🟢';
+      balanceMsg = diff > 0 ? `Tenés ${diff}hs de más. Excelente.` : 'Justo en horario.';
+    } else {
+      const missing = Math.abs(diff);
+      balanceColor = missing > 2 ? 'var(--red)' : 'var(--yellow)';
+      balanceIcon = missing > 2 ? '🔴' : '🟡';
+      balanceMsg = `Te faltan ${missing}hs. Tenés hasta el viernes para compensar.`;
+    }
+
+    weeklyHtml = `
+      <div class="verify-card" style="margin-top:1rem">
+        <h3 style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:0.75rem;">📅 Tu semana</h3>
+        ${dayRows}
+        <div style="display:flex;justify-content:space-between;padding:0.75rem 0 0.25rem;font-size:0.9rem;font-weight:600;">
+          <span>Total</span>
+          <span style="color:${balanceColor}">${totalWorked}hs / ${expectedTotal}hs</span>
+        </div>
+        <div style="text-align:center;padding:0.75rem;margin-top:0.5rem;background:var(--surface-2);border-radius:6px;font-size:0.9rem;">
+          ${balanceIcon} ${balanceMsg}
+        </div>
+      </div>`;
+  }
+
+  // Today's result message
+  let todayMsg;
+  if (record.total_hours && record.total_hours >= EXPECTED) {
+    todayMsg = '💪 Gran día. Cumpliste tu jornada completa.';
+  } else if (record.total_hours && record.total_hours >= EXPECTED - 1) {
+    const pendingMin = Math.round((EXPECTED - record.total_hours) * 60);
+    todayMsg = `Buen día. Te quedaron ${pendingMin} minutos pendientes.`;
+  } else if (record.total_hours) {
+    todayMsg = `Registraste ${record.total_hours}hs hoy.`;
+  }
+
+  if (alreadyComplete) {
+    return miniLayout('Día completo', `
+      <div class="success-box">
+        <h2>✅ Día completo</h2>
+        <p>${name}</p>
+        ${todayMsg ? `<p style="margin-top:0.5rem;font-size:0.9rem">${todayMsg}</p>` : ''}
+      </div>
+      <div class="verify-card" style="margin-top:1rem">${statusRows}</div>
+      ${weeklyHtml}`);
+  }
+
+  const label = STATUS_LABELS[action_type] || action_type;
 
   return miniLayout('Registrado', `
     <div class="success-box">
@@ -466,7 +551,8 @@ const renderVerifySuccess = ({ user, record, action_type, time, alreadyComplete 
       <p style="margin-top:0.5rem"><strong>${label}</strong> a las <strong>${time}</strong></p>
       <p style="color:var(--text-muted);font-size:0.85rem;margin-top:0.25rem">${name} — ${t.now().format('DD/MM/YYYY')}</p>
     </div>
-    <div class="verify-card" style="margin-top:1rem">${statusRows}</div>`);
+    <div class="verify-card" style="margin-top:1rem">${statusRows}</div>
+    ${weeklyHtml}`);
 };
 
 module.exports = { setupDashboard };
