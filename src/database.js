@@ -72,24 +72,36 @@ try { db.exec('ALTER TABLE users ADD COLUMN is_tracked INTEGER DEFAULT 0'); } ca
 // USERS
 // ═══════════════════════════════════════════════════════════════════
 
-const upsertUser = db.prepare(`
+const _upsertUser = db.prepare(`
   INSERT INTO users (slack_id, name, real_name)
   VALUES (@slack_id, @name, @real_name)
   ON CONFLICT(slack_id) DO UPDATE SET name = @name, real_name = @real_name
 `);
+const upsertUser = (data) => _upsertUser.run(data);
 
-const getUser = db.prepare('SELECT * FROM users WHERE slack_id = ?');
-const getAllUsers = db.prepare('SELECT * FROM users ORDER BY name');
-const getTrackedUsers = db.prepare('SELECT * FROM users WHERE is_tracked = 1 ORDER BY name');
-const getAdminUsers = db.prepare('SELECT * FROM users WHERE is_admin = 1');
-const setAdmin = db.prepare('UPDATE users SET is_admin = ? WHERE slack_id = ?');
-const setTracked = db.prepare('UPDATE users SET is_tracked = ? WHERE slack_id = ?');
+const _getUser = db.prepare('SELECT * FROM users WHERE slack_id = ?');
+const getUser = (slackId) => _getUser.get(slackId);
+
+const _getAllUsers = db.prepare('SELECT * FROM users ORDER BY name');
+const getAllUsers = () => _getAllUsers.all();
+
+const _getTrackedUsers = db.prepare('SELECT * FROM users WHERE is_tracked = 1 ORDER BY name');
+const getTrackedUsers = () => _getTrackedUsers.all();
+
+const _getAdminUsers = db.prepare('SELECT * FROM users WHERE is_admin = 1');
+const getAdminUsers = () => _getAdminUsers.all();
+
+const _setAdmin = db.prepare('UPDATE users SET is_admin = ? WHERE slack_id = ?');
+const setAdmin = (val, slackId) => _setAdmin.run(val, slackId);
+
+const _setTracked = db.prepare('UPDATE users SET is_tracked = ? WHERE slack_id = ?');
+const setTracked = (val, slackId) => _setTracked.run(val, slackId);
 
 const isAdmin = (slackId) => {
   const envAdmins = (process.env.ADMIN_USER_IDS || '')
     .split(',').map(s => s.trim()).filter(Boolean);
   if (envAdmins.includes(slackId)) return true;
-  const user = getUser.get(slackId);
+  const user = getUser(slackId);
   return user?.is_admin === 1;
 };
 

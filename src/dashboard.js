@@ -14,8 +14,8 @@ const setupDashboard = (boltApp) => {
     const todayRecords = db.getRecordsByDateRange(today, today);
     const missing = db.getMissingToday(today);
     const weeklySummary = db.getWeeklySummary(weekStart, weekEnd);
-    const users = db.getAllUsers.all();
-    const tracked = db.getTrackedUsers.all();
+    const users = db.getAllUsers();
+    const tracked = db.getTrackedUsers();
 
     res.send(renderDashboard({ todayRecords, missing, weeklySummary, users, tracked, today }));
   });
@@ -30,7 +30,7 @@ const setupDashboard = (boltApp) => {
       ? db.getUserRecordsByDateRange(user, startDate, endDate)
       : db.getRecordsByDateRange(startDate, endDate);
 
-    const users = db.getAllUsers.all();
+    const users = db.getAllUsers();
     res.send(renderRecords({ records, users, startDate, endDate, selectedUser: user }));
   });
 
@@ -42,7 +42,7 @@ const setupDashboard = (boltApp) => {
 
     const pingSummary = db.getPingSummary(startDate, endDate);
     const pings = db.getPingsByDateRange(startDate, endDate);
-    const tracked = db.getTrackedUsers.all();
+    const tracked = db.getTrackedUsers();
 
     const presenceData = tracked.map(u => {
       const ps = db.getPresenceSummary(u.slack_id, startDate, endDate);
@@ -54,9 +54,9 @@ const setupDashboard = (boltApp) => {
 
   // ─── Users management page ───────────────────────────────────────
   router.get('/users', (req, res) => {
-    const users = db.getAllUsers.all();
-    const tracked = db.getTrackedUsers.all();
-    const admins = db.getAdminUsers.all();
+    const users = db.getAllUsers();
+    const tracked = db.getTrackedUsers();
+    const admins = db.getAdminUsers();
     res.send(renderUsers({ users, tracked, admins }));
   });
 

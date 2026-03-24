@@ -169,8 +169,8 @@ app.command('/admin', async ({ command, ack, respond, client }) => {
     case 'lista':
     case 'list':
     case '': {
-      const allUsers = db.getAllUsers.all();
-      const tracked = db.getTrackedUsers.all();
+      const allUsers = db.getAllUsers();
+      const tracked = db.getTrackedUsers();
       const trackedIds = tracked.map(u => u.slack_id);
       await respond({
         response_type: 'ephemeral',
@@ -200,8 +200,8 @@ app.command('/admin', async ({ command, ack, respond, client }) => {
         db.upsertUser({ slack_id: targetId, name: mention, real_name: mention });
       }
 
-      db.setTracked.run(1, targetId);
-      const user = db.getUser.get(targetId);
+      db.setTracked(1, targetId);
+      const user = db.getUser(targetId);
       await respond({
         response_type: 'ephemeral',
         text: `✅ *${user.real_name || user.name}* agregado al tracking. Va a recibir pings de actividad y debe fichar asistencia.`,
@@ -218,8 +218,8 @@ app.command('/admin', async ({ command, ack, respond, client }) => {
         await respond({ response_type: 'ephemeral', text: '⚠️ Usá: `/admin sacar @usuario`' });
         return;
       }
-      db.setTracked.run(0, targetId);
-      const user = db.getUser.get(targetId);
+      db.setTracked(0, targetId);
+      const user = db.getUser(targetId);
       await respond({
         response_type: 'ephemeral',
         text: `✅ *${user?.real_name || targetId}* sacado del tracking.`,
@@ -243,8 +243,8 @@ app.command('/admin', async ({ command, ack, respond, client }) => {
         });
       } catch (e) {}
 
-      db.setAdmin.run(1, targetId);
-      const user = db.getUser.get(targetId);
+      db.setAdmin(1, targetId);
+      const user = db.getUser(targetId);
       await respond({
         response_type: 'ephemeral',
         text: `✅ *${user?.real_name || targetId}* ahora es admin.`,
@@ -270,7 +270,7 @@ app.command('/admin', async ({ command, ack, respond, client }) => {
     case 'presence': {
       const startDate = dayjs().startOf('week').format('YYYY-MM-DD');
       const endDate = dayjs().format('YYYY-MM-DD');
-      const tracked = db.getTrackedUsers.all();
+      const tracked = db.getTrackedUsers();
       const presenceData = [];
       for (const u of tracked) {
         const ps = db.getPresenceSummary(u.slack_id, startDate, endDate);

@@ -107,7 +107,7 @@ const runPingCycle = async (app) => {
   // Skip outside work hours
   if (now.hour() < WORK_START_HOUR || now.hour() >= WORK_END_HOUR) return;
 
-  const tracked = db.getTrackedUsers.all();
+  const tracked = db.getTrackedUsers();
 
   for (const user of tracked) {
     // Only ping users who checked in today and haven't exited
@@ -164,7 +164,7 @@ const runPresenceCheck = async (app) => {
   if (now.day() === 0 || now.day() === 6) return;
   if (now.hour() < WORK_START_HOUR || now.hour() >= WORK_END_HOUR) return;
 
-  const tracked = db.getTrackedUsers.all();
+  const tracked = db.getTrackedUsers();
 
   for (const user of tracked) {
     // Only check users who are "at work" today
