@@ -5,7 +5,7 @@ const db = require('./database');
 const blocks = require('./blocks');
 const { setupScheduler } = require('./scheduler');
 const { setupDashboard } = require('./dashboard');
-const { createToken } = require('./verification');
+const { createToken, getCurrentPin } = require('./verification');
 
 // ─── Express receiver ──────────────────────────────────────────────
 const receiver = new ExpressReceiver({
@@ -47,6 +47,7 @@ app.command('/asistencia', async ({ command, ack }) => {
   db.upsertUser({ slack_id: user_id, name: user_name, real_name: user_name });
 
   const token = createToken(user_id);
+  const pin = getCurrentPin();
   const url = `${getBaseUrl()}/verify/${token}`;
 
   await ack({
@@ -63,7 +64,14 @@ app.command('/asistencia', async ({ command, ack }) => {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `Abrí este link *desde tu computadora* para registrar tu asistencia:\n\n👉 <${url}|Registrar asistencia>`,
+          text: `Abrí este link *desde tu computadora* para registrar:\n\n👉 <${url}|Registrar asistencia>`,
+        },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `🔑 Tu PIN: *\`${pin}\`*`,
         },
       },
       {
@@ -71,7 +79,7 @@ app.command('/asistencia', async ({ command, ack }) => {
         elements: [
           {
             type: 'mrkdwn',
-            text: '⏱️ El link expira en 2 minutos. Solo funciona desde un navegador de escritorio.',
+            text: '⏱️ Link y PIN expiran en 2 minutos. Solo funciona desde un navegador de escritorio.',
           },
         ],
       },

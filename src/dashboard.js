@@ -80,70 +80,72 @@ const setupDashboard = (boltApp) => {
   const verifyRouter = express.Router();
   verifyRouter.use(express.urlencoded({ extended: true }));
 
-  // GET /verify/:token — Show verification page
+  // GET /verify/:token — Check desktop, show PIN form
   verifyRouter.get('/:token', (req, res) => {
     const { token } = req.params;
     const ua = req.headers['user-agent'] || '';
 
-    // Check if token is valid
+    if (verify.isMobileUA(ua)) {
+      res.send(renderVerifyError('Dispositivo no permitido', 'Este registro solo funciona desde un navegador de escritorio. Abrí el link desde tu computadora.'));
+      return;
+    }
+
     const slackId = verify.peekToken(token);
     if (!slackId) {
       res.send(renderVerifyError('Link expirado', 'Este link ya fue usado o expiró. Generá uno nuevo con /asistencia en Slack.'));
       return;
     }
 
-    // Check User-Agent
-    if (verify.isMobileUA(ua)) {
-      res.send(renderVerifyError('Dispositivo no permitido', 'Este registro solo funciona desde un navegador de escritorio. Abrí el link desde tu computadora.'));
-      return;
-    }
-
-    // Show attendance form
     const today = dayjs().format('YYYY-MM-DD');
     const user = db.getUser(slackId);
     const record = db.getOrCreateRecord(slackId, today);
-    res.send(renderVerifyForm({ token, user, record, today }));
+    const nextAction = getNextAction(record);
+
+    if (!nextAction) {
+      res.send(renderVerifySuccess({ user, record, action_type: null, time: null, alreadyComplete: true }));
+      return;
+    }
+
+    res.send(renderVerifyForm({ token, user, record, today, nextAction }));
   });
 
-  // POST /verify/:token — Process registration
+  // POST /verify/:token — Verify PIN + register with server time
   verifyRouter.post('/:token', (req, res) => {
     const { token } = req.params;
-    const { pin, action_type, time_value, use_now } = req.body;
+    const { pin } = req.body;
     const ua = req.headers['user-agent'] || '';
 
-    // Re-check UA
     if (verify.isMobileUA(ua)) {
       res.send(renderVerifyError('Dispositivo no permitido', 'Este registro solo funciona desde un navegador de escritorio.'));
       return;
     }
 
-    // Consume token (one-time use)
     const slackId = verify.consumeToken(token);
     if (!slackId) {
       res.send(renderVerifyError('Link expirado', 'Este link ya fue usado o expiró. Generá uno nuevo con /asistencia en Slack.'));
       return;
     }
 
-    // Verify PIN
     if (!verify.verifyPin(pin)) {
-      res.send(renderVerifyError('PIN incorrecto', 'El PIN que ingresaste no coincide con el actual. Revisá el número en el dashboard y volvé a intentar con /asistencia.'));
+      res.send(renderVerifyError('PIN incorrecto', 'El PIN no coincide con el que te apareció en Slack. Volvé a intentar con /asistencia.'));
       return;
     }
 
-    // Determine time
     const today = dayjs().format('YYYY-MM-DD');
-    const time = use_now === '1' ? dayjs().format('HH:mm') : time_value;
+    const time = dayjs().format('HH:mm');
+    const record = db.getOrCreateRecord(slackId, today);
+    const nextAction = getNextAction(record);
 
-    if (!action_type || !time) {
-      res.send(renderVerifyError('Datos incompletos', 'Faltó seleccionar la acción o la hora.'));
+    if (!nextAction) {
+      const user = db.getUser(slackId);
+      res.send(renderVerifySuccess({ user, record, action_type: null, time, alreadyComplete: true }));
       return;
     }
 
-    // Register
     try {
-      const record = db.updateField(slackId, today, action_type, time);
+      const updated = db.updateField(slackId, today, nextAction, time);
       const user = db.getUser(slackId);
-      res.send(renderVerifySuccess({ user, record, action_type, time }));
+      res.send(renderVerifySuccess({ user, record: updated, action_type: nextAction, time, alreadyComplete: false }));
     } catch (err) {
       res.send(renderVerifyError('Error', err.message));
     }
@@ -420,39 +422,13 @@ const getNextAction = (record) => {
   return null;
 };
 
-const renderVerifyForm = ({ token, user, record, today }) => {
-  const nextAction = getNextAction(record);
+const renderVerifyForm = ({ token, user, record, today, nextAction }) => {
   const name = user?.real_name || user?.name || 'Usuario';
-
-  if (!nextAction) {
-    return miniLayout('Día completo', `
-      <div class="success-box">
-        <h2>✅ Día completo</h2>
-        <p>${name}, ya tenés todas las marcaciones registradas para hoy.</p>
-      </div>`);
-  }
+  const nextLabel = STATUS_LABELS[nextAction];
 
   const statusRows = Object.entries(STATUS_LABELS).map(([field, label]) =>
     `<div class="status-row"><span>${label}</span><span>${record[field] || '—'}</span></div>`
   ).join('');
-
-  // Time options
-  const timeOptions = [];
-  for (let h = 7; h <= 22; h++) {
-    for (const m of ['00', '15', '30', '45']) {
-      const t = `${String(h).padStart(2, '0')}:${m}`;
-      const sel = t === dayjs().format('HH:mm') ? 'selected' : '';
-      timeOptions.push(`<option value="${t}" ${sel}>${t}</option>`);
-    }
-  }
-
-  // Available actions (only pending ones)
-  const actionOptions = Object.entries(STATUS_LABELS)
-    .filter(([field]) => !record[field])
-    .map(([field, label]) => {
-      const sel = field === nextAction ? 'selected' : '';
-      return `<option value="${field}" ${sel}>${label}</option>`;
-    }).join('');
 
   return miniLayout('Registrar asistencia', `
     <div class="verify-card">
@@ -461,31 +437,18 @@ const renderVerifyForm = ({ token, user, record, today }) => {
 
       <div style="margin-bottom:1.25rem">${statusRows}</div>
 
-      <form method="POST" action="/verify/${token}" id="verify-form">
+      <div style="text-align:center;margin-bottom:1.25rem;padding:0.75rem;background:var(--surface-2);border-radius:6px;">
+        <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;">Registrando</span><br>
+        <span style="font-size:1.2rem;font-weight:600;">${nextLabel}</span>
+      </div>
+
+      <form method="POST" action="/verify/${token}">
         <div class="form-group">
-          <label>Acción</label>
-          <select name="action_type">${actionOptions}</select>
-        </div>
-
-        <input type="hidden" name="use_now" value="0" id="use-now-field">
-
-        <div class="form-group" id="time-group">
-          <label>Hora</label>
-          <select name="time_value">${timeOptions.join('')}</select>
-        </div>
-
-        <button type="button" class="btn-secondary" onclick="document.getElementById('use-now-field').value='1'; document.getElementById('time-group').style.display='none'; this.style.background='var(--green)'; this.style.color='var(--bg)'; this.textContent='⏱️ Hora actual seleccionada (${dayjs().format('HH:mm')})'; this.disabled=true;">
-          ⏱️ Usar hora actual (${dayjs().format('HH:mm')})
-        </button>
-
-        <div class="or-divider">— ingresá el PIN del dashboard —</div>
-
-        <div class="form-group">
-          <label>PIN</label>
+          <label>Ingresá el PIN que te apareció en Slack</label>
           <input type="text" name="pin" class="pin-input" maxlength="4" pattern="[0-9]{4}" placeholder="0000" required autocomplete="off" inputmode="numeric">
         </div>
 
-        <button type="submit" class="btn-primary">✅ Registrar</button>
+        <button type="submit" class="btn-primary">✅ Registrar ${nextLabel}</button>
       </form>
     </div>`);
 };
@@ -496,10 +459,22 @@ const renderVerifyError = (title, message) => miniLayout('Error', `
     <p style="margin-top:0.75rem">${message}</p>
   </div>`);
 
-const renderVerifySuccess = ({ user, record, action_type, time }) => {
+const renderVerifySuccess = ({ user, record, action_type, time, alreadyComplete }) => {
   const name = user?.real_name || user?.name || 'Usuario';
-  const label = STATUS_LABELS[action_type] || action_type;
 
+  if (alreadyComplete) {
+    const statusRows = Object.entries(STATUS_LABELS).map(([field, lb]) =>
+      `<div class="status-row"><span>${lb}</span><span>${record[field] || '—'}</span></div>`
+    ).join('');
+    return miniLayout('Día completo', `
+      <div class="success-box">
+        <h2>✅ Día completo</h2>
+        <p>${name}, ya tenés todas las marcaciones registradas para hoy.</p>
+      </div>
+      <div class="verify-card" style="margin-top:1rem">${statusRows}</div>`);
+  }
+
+  const label = STATUS_LABELS[action_type] || action_type;
   const statusRows = Object.entries(STATUS_LABELS).map(([field, lb]) =>
     `<div class="status-row"><span>${lb}</span><span style="${field === action_type ? 'color:var(--green);font-weight:700' : ''}">${record[field] || '—'}</span></div>`
   ).join('');
