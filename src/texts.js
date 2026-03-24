@@ -47,10 +47,10 @@ module.exports = {
   asistencia: {
     title: '🕒  *¡Hora de marcar!*',
     linkInstructions: 'Abrí este link *desde tu computadora*:',
-    linkLabel: 'Registrá tu asistencia',
+    linkLabel: 'Marcá tu jornada',
     pinLabel: (pin) => `🔑 Tu PIN personal: *\`${pin}\`*`,
     expireNote: '⏱️ Link y PIN expiran en 2 minutos. Solo funciona desde desktop.',
-    alreadyComplete: '✅ Ya tenés el día completo registrado.',
+    alreadyComplete: '✅ Ya tenés el día completo',
     fieldRegistered: (emoji, label, time) => `🎬 *Campo* — ${emoji} *${label}* registrada a las *${time}*`,
     fieldAlreadyComplete: '✅ Ya tenés el día completo registrado (campo).',
   },
@@ -96,7 +96,9 @@ module.exports = {
   reminders: {
     entryMissing: '🔔 Son las 9:35 👀 ¿Te olvidaste de marcar tu entrada?. Hacelo rápido con `/marcar` .',
     lunchMissing: '🍽️ Son las 14:00 ¿Te olvidaste de registrar tu almuerzo?. Escribí `/marcar` para registrarlo.',
-    exitMissing: '🔔 🔔 Aún no registraste tu salida. Podés completarla escribiendo `/marcar`',
+    exitMissing: '🔔 Son las 18:30 y todavía no registraste tu salida. Escribí `/marcar` para completar. Si no lo hacés, se va a cerrar automáticamente.',
+    exitAutoClosedField: '🔒 Tu jornada de hoy fue cerrada automáticamente a las 18:30.',
+    exitAutoClosedUser: (exitTime) => `🔒 Tu jornada de hoy fue cerrada automáticamente.\nSalida registrada: *${exitTime}*\nSi esto es incorrecto, avisale al admin.`,
     meetingOver: (time) => `📍 Tu reunión terminó a las ${time}. ¿Ya volviste? Escribí \`/marcar\` si necesitás registrar algo.`,
   },
 

@@ -65,19 +65,70 @@ const setupScheduler = (app) => {
     } catch (err) { console.error('[scheduler] Error 14:00:', err); }
   }, { timezone: TZ });
 
-  // ─── 18:30 — Exit reminder ──────────────────────────────────────
+  // ─── 18:30 — Exit reminder to office workers ────────────────────
   cron.schedule('30 18 * * 1-5', async () => {
     try {
       const today = t.today();
+      if (db.isHoliday(today)) return;
+
+      // Auto-close field and meeting users immediately at 18:30
       const incomplete = db.getIncompleteToday(today);
       for (const r of incomplete) {
+        const isField = r.work_mode === 'field' || db.isFieldDay(r.slack_id, today);
+        const hasMeeting = db.getActiveMeeting(r.slack_id, today);
+
+        if (isField || hasMeeting) {
+          // Auto-close now
+          if (hasMeeting) db.endMeeting(hasMeeting.id, '18:30');
+          if (!r.lunch_start) {
+            db.updateField(r.slack_id, today, 'lunch_start', '13:00');
+            db.updateField(r.slack_id, today, 'lunch_end', '14:00');
+          } else if (r.lunch_start && !r.lunch_end) {
+            const autoEnd = t.dayjs(`${today} ${r.lunch_start}`).add(60, 'minute').format('HH:mm');
+            db.updateField(r.slack_id, today, 'lunch_end', autoEnd);
+          }
+          db.updateField(r.slack_id, today, 'exit_time', '18:30');
+          await app.client.chat.postMessage({
+            channel: r.slack_id,
+            text: '🔔 Tu jornada de hoy fue cerrada automáticamente a las 18:30.',
+          });
+          console.log(`[scheduler] Auto-closed field/meeting: ${r.real_name || r.name}`);
+        } else {
+          // Office worker — send reminder
+          await app.client.chat.postMessage({
+            channel: r.slack_id,
+            text: '🔔 Son las 18:30 y todavía no registraste tu salida. Escribí `/marcar` para completar. Si no lo hacés, se va a cerrar automáticamente.',
+          });
+        }
+      }
+    } catch (err) { console.error('[scheduler] Error 18:30:', err); }
+  }, { timezone: TZ });
+
+  // ─── 20:30 — Auto-close everyone still open ────────────────────
+  cron.schedule('30 20 * * 1-5', async () => {
+    try {
+      const today = t.today();
+      if (db.isHoliday(today)) return;
+
+      const closed = db.autoCloseDay(today, '18:30');
+
+      for (const c of closed) {
+        const exitLabel = c.exit_time === '18:30' ? '18:30 (horario estándar)' : `${c.exit_time} (última actividad registrada)`;
         await app.client.chat.postMessage({
-          channel: r.slack_id,
-          text: '🔔 Todavía no registraste tu salida. Escribí `/marcar` para completar.',
+          channel: c.slack_id,
+          text: `🔒 Tu jornada de hoy fue cerrada automáticamente.\nSalida registrada: *${exitLabel}*\nSi esto es incorrecto, avisale al admin.`,
         });
       }
-      if (incomplete.length > 0) console.log(`[scheduler] 18:30 exit reminder → ${incomplete.length}`);
-    } catch (err) { console.error('[scheduler] Error 18:30:', err); }
+
+      if (closed.length > 0) {
+        const names = closed.map(c => `• ${c.real_name || c.name} → ${c.exit_time}`).join('\n');
+        await app.client.chat.postMessage({
+          channel: target(),
+          text: `🔒 *Cierre automático del día:*\n${names}`,
+        });
+        console.log(`[scheduler] 20:30 auto-close → ${closed.length} personas`);
+      }
+    } catch (err) { console.error('[scheduler] Error 20:30:', err); }
   }, { timezone: TZ });
 
   // ─── 19:00 — Daily summary to channel ───────────────────────────
@@ -151,6 +202,8 @@ const setupScheduler = (app) => {
   console.log('  → Alerta faltantes: L-V 10:30');
   console.log('  → Recordatorio almuerzo: L-V 14:00');
   console.log('  → Recordatorio salida: L-V 18:30');
+  console.log('  → Auto-cierre campo/reunión: L-V 18:30');
+  console.log('  → Auto-cierre general: L-V 20:30');
   console.log('  → Resumen diario: L-V 19:00');
   console.log('  → Reporte semanal: Viernes 18:00');
   console.log('  → Reporte mensual + Excel: 1ro 09:00');

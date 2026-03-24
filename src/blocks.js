@@ -23,6 +23,8 @@ const getNextAction = (record) => {
   if (!record.lunch_start) return 'lunch_start';
   if (!record.lunch_end) return 'lunch_end';
   if (!record.exit_time) return 'exit_time';
+  // Auto-closed by bot → allow correcting exit time
+  if (record.auto_closed === 1) return 'exit_time';
   return null;
 };
 

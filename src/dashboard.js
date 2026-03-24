@@ -139,6 +139,7 @@ const setupDashboard = (boltApp) => {
 
     try {
       const updated = db.updateField(slackId, today, nextAction, time);
+      db.updateLastSeen(slackId, today, time);
       const user = db.getUser(slackId);
       res.send(renderVerifySuccess({ user, record: updated, action_type: nextAction, time, alreadyComplete: false }));
     } catch (err) {
@@ -394,6 +395,7 @@ const getNextAction = (record) => {
   if (!record.lunch_start) return 'lunch_start';
   if (!record.lunch_end) return 'lunch_end';
   if (!record.exit_time) return 'exit_time';
+  if (record.auto_closed === 1) return 'exit_time';
   return null;
 };
 
@@ -412,8 +414,12 @@ const renderVerifyForm = ({ token, user, record, today, nextAction }) => {
 
       <div style="margin-bottom:1.25rem">${statusRows}</div>
 
+      ${record.auto_closed ? `<div style="text-align:center;margin-bottom:1rem;padding:0.5rem;background:rgba(253,203,110,0.15);border:1px solid var(--yellow);border-radius:6px;font-size:0.85rem;color:var(--yellow);">
+        ⚠️ Tu salida fue cerrada automáticamente a las ${record.exit_time}. Podés corregirla ahora.
+      </div>` : ''}
+
       <div style="text-align:center;margin-bottom:1.25rem;padding:0.75rem;background:var(--surface-2);border-radius:6px;">
-        <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;">Registrando</span><br>
+        <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;">${record.auto_closed ? 'Corrigiendo' : 'Registrando'}</span><br>
         <span style="font-size:1.2rem;font-weight:600;">${nextLabel}</span>
       </div>
 

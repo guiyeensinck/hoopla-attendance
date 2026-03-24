@@ -31,6 +31,17 @@ const extractUserId = (str) => {
   return m ? m[1] : (/^U[A-Z0-9]+$/.test(str) ? str : null);
 };
 
+// ─── Track last interaction for auto-close ─────────────────────────
+app.use(async ({ next, body }) => {
+  try {
+    const uid = body?.user_id || body?.user?.id;
+    if (uid) {
+      db.updateLastSeen(uid, t.today(), t.currentTime());
+    }
+  } catch (e) { /* ignore tracking errors */ }
+  await next();
+});
+
 // ═══════════════════════════════════════════════════════════════════
 // /marcar
 // ═══════════════════════════════════════════════════════════════════

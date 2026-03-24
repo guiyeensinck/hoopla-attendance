@@ -95,6 +95,8 @@ db.exec(`
 try { db.exec('ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0'); } catch(e) {}
 try { db.exec('ALTER TABLE users ADD COLUMN is_tracked INTEGER DEFAULT 0'); } catch(e) {}
 try { db.exec('ALTER TABLE records ADD COLUMN work_mode TEXT DEFAULT \'office\''); } catch(e) {}
+try { db.exec('ALTER TABLE records ADD COLUMN last_seen TEXT'); } catch(e) {}
+try { db.exec('ALTER TABLE records ADD COLUMN auto_closed INTEGER DEFAULT 0'); } catch(e) {}
 
 // ═══════════════════════════════════════════════════════════════════
 // USERS
@@ -127,6 +129,12 @@ const updateField = (slackId, date, field, value) => {
   const allowed = ['entry_time', 'lunch_start', 'lunch_end', 'exit_time', 'notes', 'work_mode'];
   if (!allowed.includes(field)) throw new Error(`Campo no permitido: ${field}`);
   db.prepare(`UPDATE records SET ${field} = ? WHERE slack_id = ? AND date = ?`).run(value, slackId, date);
+
+  // If correcting exit_time, clear auto_closed flag
+  if (field === 'exit_time') {
+    db.prepare('UPDATE records SET auto_closed = 0 WHERE slack_id = ? AND date = ?').run(slackId, date);
+  }
+
   const record = db.prepare('SELECT * FROM records WHERE slack_id = ? AND date = ?').get(slackId, date);
   if (record.entry_time && record.exit_time) {
     const entry = dayjs(`${date} ${record.entry_time}`);
@@ -146,6 +154,82 @@ const setWorkMode = (slackId, date, mode) => {
 };
 
 const getRecord = (slackId, date) => db.prepare('SELECT * FROM records WHERE slack_id = ? AND date = ?').get(slackId, date);
+
+/** Update last_seen timestamp whenever user interacts */
+const updateLastSeen = (slackId, date, time) => {
+  getOrCreateRecord(slackId, date);
+  db.prepare('UPDATE records SET last_seen = ? WHERE slack_id = ? AND date = ?').run(time, slackId, date);
+};
+
+/**
+ * Auto-close all open days at end of day.
+ * - Field/meeting users without exit → exit at closeTime (e.g. 18:30)
+ * - Office users without exit → exit at their last_seen, or closeTime as fallback
+ * - Auto-fill missing lunch if entry exists but no lunch
+ * Returns array of closed records for notification
+ */
+const autoCloseDay = (date, closeTime) => {
+  const open = db.prepare(`
+    SELECT r.*, u.name, u.real_name FROM records r
+    JOIN users u ON r.slack_id = u.slack_id
+    WHERE r.date = ? AND r.entry_time IS NOT NULL AND r.exit_time IS NULL AND u.is_tracked = 1
+  `).all(date);
+
+  const closed = [];
+
+  for (const r of open) {
+    const isField = r.work_mode === 'field';
+    const hasMeeting = db.prepare("SELECT COUNT(*) as c FROM meetings WHERE slack_id = ? AND date = ? AND end_time IS NULL").get(r.slack_id, date)?.c > 0;
+
+    // Determine exit time
+    let exitTime;
+    if (isField || hasMeeting) {
+      exitTime = closeTime; // 18:30 for field/meeting
+    } else {
+      // Use last_seen, fallback to closeTime
+      exitTime = r.last_seen || closeTime;
+    }
+
+    // Auto-close open meetings
+    if (hasMeeting) {
+      db.prepare("UPDATE meetings SET end_time = ?, duration_min = NULL WHERE slack_id = ? AND date = ? AND end_time IS NULL")
+        .run(closeTime, r.slack_id, date);
+    }
+
+    // Auto-fill missing lunch (default 1hr: 13:00-14:00)
+    if (!r.lunch_start) {
+      db.prepare('UPDATE records SET lunch_start = ?, lunch_end = ? WHERE slack_id = ? AND date = ?')
+        .run('13:00', '14:00', r.slack_id, date);
+    } else if (r.lunch_start && !r.lunch_end) {
+      // Started lunch but never ended — assume 1hr
+      const lunchStart = dayjs(`${date} ${r.lunch_start}`);
+      const autoEnd = lunchStart.add(60, 'minute').format('HH:mm');
+      db.prepare('UPDATE records SET lunch_end = ? WHERE slack_id = ? AND date = ?')
+        .run(autoEnd, r.slack_id, date);
+    }
+
+    // Set exit
+    db.prepare('UPDATE records SET exit_time = ?, auto_closed = 1 WHERE slack_id = ? AND date = ?')
+      .run(exitTime, r.slack_id, date);
+
+    // Recalculate hours
+    const updated = db.prepare('SELECT * FROM records WHERE slack_id = ? AND date = ?').get(r.slack_id, date);
+    if (updated.entry_time && updated.exit_time) {
+      const entry = dayjs(`${date} ${updated.entry_time}`);
+      const exit = dayjs(`${date} ${updated.exit_time}`);
+      let mins = exit.diff(entry, 'minute');
+      if (updated.lunch_start && updated.lunch_end) {
+        mins -= dayjs(`${date} ${updated.lunch_end}`).diff(dayjs(`${date} ${updated.lunch_start}`), 'minute');
+      }
+      db.prepare('UPDATE records SET total_hours = ? WHERE slack_id = ? AND date = ?')
+        .run(Math.round((mins / 60) * 100) / 100, r.slack_id, date);
+    }
+
+    closed.push({ slack_id: r.slack_id, name: r.name, real_name: r.real_name, exit_time: exitTime, was_field: isField });
+  }
+
+  return closed;
+};
 
 // ═══════════════════════════════════════════════════════════════════
 // DAY OVERRIDES (holidays, vacations, medical, etc.)
@@ -359,7 +443,7 @@ const countWorkdaysInRange = (startDate, endDate) => {
 
 module.exports = {
   db, upsertUser, getUser, getAllUsers, getTrackedUsers, getAdminUsers, setAdmin, setTracked, isAdmin,
-  getOrCreateRecord, updateField, setWorkMode, getRecord,
+  getOrCreateRecord, updateField, setWorkMode, getRecord, updateLastSeen, autoCloseDay,
   addOverride, removeOverride, getOverridesForDate, getUserOverride, isHoliday, getOverridesByRange, isUserExemptToday, isFieldDay,
   getRecordsByDateRange, getUserRecordsByDateRange, getMissingToday, getIncompleteToday, getNoLunchYet,
   getWeeklySummary, getOvertimeToday, getDailySummary, getMonthlyExportData,
