@@ -1,4 +1,4 @@
-const dayjs = require('dayjs');
+const t = require('./time');
 const db = require('./database');
 
 // ─── Config ────────────────────────────────────────────────────────
@@ -95,7 +95,7 @@ const buildPingMessage = (pingId) => {
  * Called every minute from scheduler cron.
  */
 const runPingCycle = async (app) => {
-  const now = dayjs();
+  const now = t.now();
   const date = now.format('YYYY-MM-DD');
   const currentMinute = now.hour() * 60 + now.minute();
   const currentTime = now.format('HH:mm:ss');
@@ -110,6 +110,12 @@ const runPingCycle = async (app) => {
   const tracked = db.getTrackedUsers();
 
   for (const user of tracked) {
+    // Skip exempt users (vacation, holiday, medical, etc.)
+    if (db.isUserExemptToday(user.slack_id, date)) continue;
+
+    // Skip field workers (no desktop pings)
+    if (db.isFieldDay(user.slack_id, date)) continue;
+
     // Only ping users who checked in today and haven't exited
     const record = db.getRecord(user.slack_id, date);
     if (!record || !record.entry_time || record.exit_time) continue;
@@ -156,7 +162,7 @@ const runPingCycle = async (app) => {
  * Called every 30 min from scheduler.
  */
 const runPresenceCheck = async (app) => {
-  const now = dayjs();
+  const now = t.now();
   const date = now.format('YYYY-MM-DD');
   const time = now.format('HH:mm');
 

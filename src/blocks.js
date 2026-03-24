@@ -1,6 +1,6 @@
-const dayjs = require('dayjs');
+const t = require('./time');
+const dayjs = t.dayjs;
 
-// ─── Status mapping ────────────────────────────────────────────────
 const STATUS = {
   entry_time:   { emoji: '🟢', label: 'Entrada' },
   lunch_start:  { emoji: '🍽️', label: 'Inicio almuerzo' },
@@ -8,21 +8,15 @@ const STATUS = {
   exit_time:    { emoji: '🔴', label: 'Salida' },
 };
 
-// ─── Time options (every 15 min) ───────────────────────────────────
-const generateTimeOptions = (startHour = 7, endHour = 22) => {
-  const options = [];
-  for (let h = startHour; h <= endHour; h++) {
-    for (const m of ['00', '15', '30', '45']) {
-      const time = `${String(h).padStart(2, '0')}:${m}`;
-      options.push({ text: { type: 'plain_text', text: time }, value: time });
-    }
-  }
-  return options;
+const OVERRIDE_LABELS = {
+  holiday: '🏖️ Feriado',
+  vacation: '✈️ Vacaciones',
+  medical: '🏥 Turno médico',
+  field: '🎬 Trabajo de campo',
+  absent: '❌ Ausente',
+  early_exit: '🕐 Salida temprana',
+  day_off: '📅 Día libre',
 };
-
-// ═══════════════════════════════════════════════════════════════════
-// ATTENDANCE MENU
-// ═══════════════════════════════════════════════════════════════════
 
 const getNextAction = (record) => {
   if (!record || !record.entry_time) return 'entry_time';
@@ -33,285 +27,119 @@ const getNextAction = (record) => {
 };
 
 const buildAttendanceMenu = (record = null) => {
-  const today = dayjs().format('YYYY-MM-DD');
-  const blocks = [];
-
-  blocks.push({
-    type: 'header',
-    text: { type: 'plain_text', text: `📋 Registro de asistencia — ${dayjs().format('DD/MM/YYYY')}` },
-  });
-
+  const blocks = [{ type: 'header', text: { type: 'plain_text', text: `📋 Registro — ${t.now().format('DD/MM/YYYY')}` } }];
   if (record) {
-    const parts = [];
-    for (const [field, info] of Object.entries(STATUS)) {
-      parts.push(`${info.emoji} ${info.label}: ${record[field] || '_pendiente_'}`);
-    }
+    const parts = Object.entries(STATUS).map(([f, i]) => `${i.emoji} ${i.label}: ${record[f] || '_pendiente_'}`);
+    if (record.work_mode === 'field') parts.unshift('🎬 *Trabajo de campo*');
     if (record.total_hours) parts.push(`\n⏱️ *Total: ${record.total_hours}hs*`);
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: parts.join('\n') } });
-    blocks.push({ type: 'divider' });
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: parts.join('\n') } }, { type: 'divider' });
   }
-
-  const nextAction = getNextAction(record);
-
-  blocks.push({
-    type: 'section',
-    text: {
-      type: 'mrkdwn',
-      text: nextAction
-        ? `*Siguiente paso:* ${STATUS[nextAction]?.label || 'Registrar'}`
-        : '✅ *Día completo registrado*',
-    },
-  });
-
-  if (nextAction) {
-    blocks.push({
-      type: 'actions',
-      elements: [
-        {
-          type: 'static_select',
-          placeholder: { type: 'plain_text', text: '¿Qué registrás?' },
-          action_id: 'select_action_type',
-          initial_option: {
-            text: { type: 'plain_text', text: STATUS[nextAction].label },
-            value: nextAction,
-          },
-          options: Object.entries(STATUS)
-            .filter(([field]) => !record || !record[field])
-            .map(([field, info]) => ({
-              text: { type: 'plain_text', text: `${info.emoji} ${info.label}` },
-              value: field,
-            })),
-        },
-        {
-          type: 'static_select',
-          placeholder: { type: 'plain_text', text: 'Hora' },
-          action_id: 'select_time',
-          options: generateTimeOptions(),
-        },
-      ],
-    });
-
-    blocks.push({
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '✅ Registrar' },
-          style: 'primary',
-          action_id: 'confirm_attendance',
-          value: today,
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '⏱️ Registrar ahora' },
-          action_id: 'register_now',
-          value: today,
-        },
-      ],
-    });
-  }
-
+  const next = getNextAction(record);
+  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: next ? `*Siguiente:* ${STATUS[next]?.label}` : '✅ *Día completo*' } });
   return blocks;
 };
 
-const buildConfirmation = (actionField, time) => {
-  const info = STATUS[actionField];
-  return [{
-    type: 'section',
-    text: { type: 'mrkdwn', text: `${info.emoji} *${info.label}* registrada a las *${time}*` },
-  }];
+const buildConfirmation = (field, time) => {
+  const info = STATUS[field];
+  return [{ type: 'section', text: { type: 'mrkdwn', text: `${info.emoji} *${info.label}* registrada a las *${time}*` } }];
 };
 
-// ═══════════════════════════════════════════════════════════════════
-// REPORTS
-// ═══════════════════════════════════════════════════════════════════
+const buildWeeklyReport = (summary, s, e) => {
+  const blocks = [{ type: 'header', text: { type: 'plain_text', text: `📊 Reporte: ${dayjs(s).format('DD/MM')} – ${dayjs(e).format('DD/MM/YYYY')}` } }, { type: 'divider' }];
+  if (!summary.length) { blocks.push({ type: 'section', text: { type: 'mrkdwn', text: 'Sin registros.' } }); return blocks; }
+  for (const r of summary) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*${r.real_name || r.name}*\n  📅 Días: ${r.days_worked} | ⏱️ ${r.total_hours}hs | 📊 ${r.avg_hours}hs/día` } });
+  }
+  return blocks;
+};
 
-const buildWeeklyReport = (summary, startDate, endDate) => {
-  const blocks = [
-    {
-      type: 'header',
-      text: { type: 'plain_text', text: `📊 Reporte: ${dayjs(startDate).format('DD/MM')} – ${dayjs(endDate).format('DD/MM/YYYY')}` },
-    },
-    { type: 'divider' },
+const buildMissingAlert = (users) => {
+  if (!users.length) return null;
+  return [{ type: 'section', text: { type: 'mrkdwn', text: `⚠️ *Sin entrada hoy:*\n${users.map(u => u.real_name || u.name).join(', ')}` } }];
+};
+
+const buildDailySummary = (data, date) => {
+  const overrideLines = data.overrides
+    .filter(o => o.type !== 'holiday')
+    .map(o => `  ${OVERRIDE_LABELS[o.type] || o.type}: ${o.real_name || o.name || 'Todos'}${o.reason ? ` — ${o.reason}` : ''}`)
+    .join('\n');
+
+  return [
+    { type: 'header', text: { type: 'plain_text', text: `📋 Resumen del día — ${dayjs(date).format('DD/MM/YYYY')}` } },
+    { type: 'section', text: { type: 'mrkdwn', text: [
+      `👥 Trackeados: *${data.tracked}*`,
+      `🟢 Presentes: *${data.present}*`,
+      `✅ Jornada completa: *${data.complete}*`,
+      `🎬 En campo: *${data.field}*`,
+      `❌ Faltantes: *${data.missing}*`,
+      `⏱️ Horas promedio: *${data.avgHours}hs*`,
+    ].join('\n') } },
+    ...(overrideLines ? [{ type: 'section', text: { type: 'mrkdwn', text: `*Novedades:*\n${overrideLines}` } }] : []),
   ];
-
-  if (summary.length === 0) {
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: 'No hay registros para este período.' } });
-    return blocks;
-  }
-
-  for (const row of summary) {
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: [
-          `*${row.real_name || row.name}*`,
-          `  📅 Días: ${row.days_worked}`,
-          `  ⏱️ Horas: ${row.total_hours}hs`,
-          `  📊 Promedio: ${row.avg_hours}hs/día`,
-        ].join('\n'),
-      },
-    });
-  }
-
-  return blocks;
 };
 
-const buildMissingAlert = (missingUsers) => {
-  if (missingUsers.length === 0) return null;
-  const names = missingUsers.map(u => u.real_name || u.name).join(', ');
-  return [{
-    type: 'section',
-    text: { type: 'mrkdwn', text: `⚠️ *Sin registro de entrada hoy:*\n${names}` },
-  }];
+const buildOvertimeAlert = (records) => {
+  if (!records.length) return null;
+  const lines = records.map(r => `• ${r.real_name || r.name}: ${r.total_hours}hs`).join('\n');
+  return [{ type: 'section', text: { type: 'mrkdwn', text: `⚠️ *Horas extra detectadas:*\n${lines}` } }];
 };
 
-// ═══════════════════════════════════════════════════════════════════
-// ADMIN MENU
-// ═══════════════════════════════════════════════════════════════════
+const buildLunchReminder = () => [
+  { type: 'section', text: { type: 'mrkdwn', text: '🍽️ Son las 14:00 y todavía no registraste tu almuerzo. Escribí `/marcar` para registrarlo.' } },
+];
 
 const buildAdminMenu = (users, trackedIds) => {
   const blocks = [
-    {
-      type: 'header',
-      text: { type: 'plain_text', text: '⚙️ Panel de administración' },
-    },
+    { type: 'header', text: { type: 'plain_text', text: '⚙️ Panel de administración' } },
     { type: 'divider' },
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: '*Usuarios trackeados* (deben fichar y reciben pings):',
-      },
-    },
+    { type: 'section', text: { type: 'mrkdwn', text: '*Trackeados:*' } },
   ];
-
-  if (trackedIds.length === 0) {
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: '_Ninguno configurado todavía_' },
-    });
-  } else {
-    const trackedList = users
-      .filter(u => trackedIds.includes(u.slack_id))
-      .map(u => `• ${u.real_name || u.name} — \`${u.slack_id}\``)
-      .join('\n');
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: trackedList || '_Ninguno_' },
-    });
-  }
-
-  blocks.push({ type: 'divider' });
-  blocks.push({
-    type: 'section',
-    text: {
-      type: 'mrkdwn',
-      text: [
-        '*Comandos disponibles:*',
-        '`/admin agregar @usuario` — Agregar usuario al tracking',
-        '`/admin sacar @usuario` — Quitar usuario del tracking',
-        '`/admin lista` — Ver esta lista',
-        '`/admin admin @usuario` — Dar permisos de admin',
-        '`/admin actividad` — Ver resumen de pings de la semana',
-        '`/admin presencia` — Ver resumen de presencia Slack',
-      ].join('\n'),
-    },
-  });
-
+  const list = users.filter(u => trackedIds.includes(u.slack_id)).map(u => `• ${u.real_name || u.name}`).join('\n');
+  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: list || '_Ninguno_' } });
+  blocks.push({ type: 'divider' }, { type: 'section', text: { type: 'mrkdwn', text: [
+    '*Comandos:*',
+    '`/admin agregar @user` — Agregar al tracking',
+    '`/admin sacar @user` — Quitar del tracking',
+    '`/admin lista` — Esta lista',
+    '`/admin admin @user` — Dar admin (solo super)',
+    '`/admin feriado 2026-04-18 Viernes Santo` — Feriado',
+    '`/admin vacaciones @user 2026-04-01 2026-04-15` — Vacaciones',
+    '`/admin medico @user 2026-04-05 Turno dentista` — Turno médico',
+    '`/admin ausente @user 2026-04-05 Motivo` — Ausencia',
+    '`/admin libre @user 2026-04-05` — Día libre',
+    '`/admin novedades` — Ver novedades de hoy',
+    '`/admin actividad` — Pings de la semana',
+    '`/admin presencia` — Presencia Slack',
+  ].join('\n') } });
   return blocks;
 };
 
-// ═══════════════════════════════════════════════════════════════════
-// ACTIVITY REPORTS
-// ═══════════════════════════════════════════════════════════════════
-
-const buildPingSummaryReport = (pingSummary, startDate, endDate) => {
-  const blocks = [
-    {
-      type: 'header',
-      text: { type: 'plain_text', text: `🏓 Actividad: ${dayjs(startDate).format('DD/MM')} – ${dayjs(endDate).format('DD/MM')}` },
-    },
-    { type: 'divider' },
-  ];
-
-  if (pingSummary.length === 0) {
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: 'No hay datos de pings para el período.' } });
-    return blocks;
+const buildPingSummaryReport = (data, s, e) => {
+  const blocks = [{ type: 'header', text: { type: 'plain_text', text: `🏓 Actividad: ${dayjs(s).format('DD/MM')} – ${dayjs(e).format('DD/MM')}` } }, { type: 'divider' }];
+  if (!data.length) { blocks.push({ type: 'section', text: { type: 'mrkdwn', text: 'Sin datos.' } }); return blocks; }
+  for (const r of data) {
+    const rate = r.total_pings > 0 ? Math.round((r.responded / r.total_pings) * 100) : 0;
+    const avg = r.avg_response_ms ? Math.round(r.avg_response_ms / 1000) + 's' : '—';
+    const icon = rate >= 70 ? '🟢' : rate >= 50 ? '🟡' : '🔴';
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `${icon} *${r.real_name || r.name}*\n  📨 ${r.total_pings} | ✅ ${r.responded} | ❌ ${r.missed} | ${rate}% | ⚡ ${avg}` } });
   }
-
-  for (const row of pingSummary) {
-    const avgSec = row.avg_response_ms ? Math.round(row.avg_response_ms / 1000) : null;
-    const responseRate = row.total_pings > 0
-      ? Math.round((row.responded / row.total_pings) * 100)
-      : 0;
-
-    let statusIcon = '🟢';
-    if (responseRate < 70) statusIcon = '🟡';
-    if (responseRate < 50) statusIcon = '🔴';
-
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: [
-          `${statusIcon} *${row.real_name || row.name}*`,
-          `  📨 Pings: ${row.total_pings} | ✅ ${row.responded} | ❌ ${row.missed}`,
-          `  📊 Tasa de respuesta: ${responseRate}%`,
-          avgSec ? `  ⚡ Respuesta promedio: ${avgSec}s` : '',
-        ].filter(Boolean).join('\n'),
-      },
-    });
-  }
-
   return blocks;
 };
 
-const buildPresenceSummaryReport = (presenceData, startDate, endDate) => {
-  const blocks = [
-    {
-      type: 'header',
-      text: { type: 'plain_text', text: `👁️ Presencia Slack: ${dayjs(startDate).format('DD/MM')} – ${dayjs(endDate).format('DD/MM')}` },
-    },
-    { type: 'divider' },
-  ];
-
-  if (presenceData.length === 0) {
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: 'No hay datos de presencia para el período.' } });
-    return blocks;
+const buildPresenceSummaryReport = (data, s, e) => {
+  const blocks = [{ type: 'header', text: { type: 'plain_text', text: `👁️ Presencia: ${dayjs(s).format('DD/MM')} – ${dayjs(e).format('DD/MM')}` } }, { type: 'divider' }];
+  if (!data.length) { blocks.push({ type: 'section', text: { type: 'mrkdwn', text: 'Sin datos.' } }); return blocks; }
+  for (const r of data) {
+    const p = r.active_pct || 0;
+    const icon = p >= 70 ? '🟢' : p >= 50 ? '🟡' : '🔴';
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `${icon} *${r.real_name || r.name}* — ${p}% activo (${r.active_count}/${r.total_checks} checks)` } });
   }
-
-  for (const row of presenceData) {
-    let statusIcon = '🟢';
-    if (row.active_pct < 70) statusIcon = '🟡';
-    if (row.active_pct < 50) statusIcon = '🔴';
-
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: [
-          `${statusIcon} *${row.real_name || row.name}*`,
-          `  Checks: ${row.total_checks} | 🟢 Active: ${row.active_count} | ⚪ Away: ${row.away_count}`,
-          `  Presencia activa: ${row.active_pct}%`,
-        ].join('\n'),
-      },
-    });
-  }
-
   return blocks;
 };
 
 module.exports = {
-  STATUS,
-  generateTimeOptions,
-  getNextAction,
-  buildAttendanceMenu,
-  buildConfirmation,
-  buildWeeklyReport,
-  buildMissingAlert,
-  buildAdminMenu,
-  buildPingSummaryReport,
-  buildPresenceSummaryReport,
+  STATUS, OVERRIDE_LABELS, getNextAction,
+  buildAttendanceMenu, buildConfirmation, buildWeeklyReport, buildMissingAlert,
+  buildDailySummary, buildOvertimeAlert, buildLunchReminder,
+  buildAdminMenu, buildPingSummaryReport, buildPresenceSummaryReport,
 };

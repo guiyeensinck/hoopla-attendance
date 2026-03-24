@@ -1,5 +1,6 @@
 const express = require('express');
-const dayjs = require('dayjs');
+const t = require('./time');
+const dayjs = t.dayjs;
 const db = require('./database');
 const verify = require('./verification');
 
@@ -8,9 +9,9 @@ const setupDashboard = (boltApp) => {
 
   // ─── Dashboard home ──────────────────────────────────────────────
   router.get('/', (req, res) => {
-    const today = dayjs().format('YYYY-MM-DD');
-    const weekStart = dayjs().startOf('week').format('YYYY-MM-DD');
-    const weekEnd = dayjs().endOf('week').format('YYYY-MM-DD');
+    const today = t.today();
+    const weekStart = t.weekStart();
+    const weekEnd = t.weekEnd();
     const todayRecords = db.getRecordsByDateRange(today, today);
     const missing = db.getMissingToday(today);
     const weeklySummary = db.getWeeklySummary(weekStart, weekEnd);
@@ -22,8 +23,8 @@ const setupDashboard = (boltApp) => {
   // ─── Records ─────────────────────────────────────────────────────
   router.get('/records', (req, res) => {
     const { from, to, user } = req.query;
-    const startDate = from || dayjs().startOf('month').format('YYYY-MM-DD');
-    const endDate = to || dayjs().format('YYYY-MM-DD');
+    const startDate = from || t.monthStart();
+    const endDate = to || t.today();
     const records = user ? db.getUserRecordsByDateRange(user, startDate, endDate) : db.getRecordsByDateRange(startDate, endDate);
     const users = db.getAllUsers();
     res.send(renderRecords({ records, users, startDate, endDate, selectedUser: user }));
@@ -32,8 +33,8 @@ const setupDashboard = (boltApp) => {
   // ─── Activity ────────────────────────────────────────────────────
   router.get('/activity', (req, res) => {
     const { from, to } = req.query;
-    const startDate = from || dayjs().startOf('week').format('YYYY-MM-DD');
-    const endDate = to || dayjs().format('YYYY-MM-DD');
+    const startDate = from || t.weekStart();
+    const endDate = to || t.today();
     const pingSummary = db.getPingSummary(startDate, endDate);
     const tracked = db.getTrackedUsers();
     const presenceData = tracked
@@ -50,24 +51,21 @@ const setupDashboard = (boltApp) => {
     res.send(renderUsers({ users, tracked, admins }));
   });
 
-  // ─── PIN API (for auto-refresh) ─────────────────────────────────
-  router.get('/api/pin', (req, res) => {
-    res.json({ pin: verify.getCurrentPin(), ttl: verify.getSecondsUntilRotation() });
-  });
+  // PIN is now per-user, no global API needed
 
   // ─── JSON APIs ───────────────────────────────────────────────────
   router.get('/api/records', (req, res) => {
     const { from, to, user } = req.query;
-    const startDate = from || dayjs().startOf('month').format('YYYY-MM-DD');
-    const endDate = to || dayjs().format('YYYY-MM-DD');
+    const startDate = from || t.monthStart();
+    const endDate = to || t.today();
     const records = user ? db.getUserRecordsByDateRange(user, startDate, endDate) : db.getRecordsByDateRange(startDate, endDate);
     res.json({ records, startDate, endDate });
   });
 
   router.get('/api/summary', (req, res) => {
     const { from, to } = req.query;
-    const startDate = from || dayjs().startOf('week').format('YYYY-MM-DD');
-    const endDate = to || dayjs().format('YYYY-MM-DD');
+    const startDate = from || t.weekStart();
+    const endDate = to || t.today();
     res.json({ summary: db.getWeeklySummary(startDate, endDate), startDate, endDate });
   });
 
@@ -92,11 +90,11 @@ const setupDashboard = (boltApp) => {
 
     const slackId = verify.peekToken(token);
     if (!slackId) {
-      res.send(renderVerifyError('Link expirado', 'Este link ya fue usado o expiró. Generá uno nuevo con /asistencia en Slack.'));
+      res.send(renderVerifyError('Link expirado', 'Este link ya fue usado o expiró. Generá uno nuevo con /marcar en Slack.'));
       return;
     }
 
-    const today = dayjs().format('YYYY-MM-DD');
+    const today = t.today();
     const user = db.getUser(slackId);
     const record = db.getOrCreateRecord(slackId, today);
     const nextAction = getNextAction(record);
@@ -120,19 +118,15 @@ const setupDashboard = (boltApp) => {
       return;
     }
 
-    const slackId = verify.consumeToken(token);
+    // consumeToken verifies PIN + token in one step
+    const slackId = verify.consumeToken(token, pin);
     if (!slackId) {
-      res.send(renderVerifyError('Link expirado', 'Este link ya fue usado o expiró. Generá uno nuevo con /asistencia en Slack.'));
+      res.send(renderVerifyError('Link o PIN incorrecto', 'El link expiró, ya fue usado, o el PIN no coincide. Generá uno nuevo con /marcar en Slack.'));
       return;
     }
 
-    if (!verify.verifyPin(pin)) {
-      res.send(renderVerifyError('PIN incorrecto', 'El PIN no coincide con el que te apareció en Slack. Volvé a intentar con /asistencia.'));
-      return;
-    }
-
-    const today = dayjs().format('YYYY-MM-DD');
-    const time = dayjs().format('HH:mm');
+    const today = t.today();
+    const time = t.currentTime();
     const record = db.getOrCreateRecord(slackId, today);
     const nextAction = getNextAction(record);
 
@@ -263,8 +257,6 @@ const renderDashboard = ({ todayRecords, missing, weeklySummary, users, tracked,
   const presentCount = todayRecords.length;
   const completeCount = todayRecords.filter(r => r.exit_time).length;
   const weeklyHours = weeklySummary.reduce((sum, r) => sum + (r.total_hours || 0), 0);
-  const pin = verify.getCurrentPin();
-  const ttl = verify.getSecondsUntilRotation();
 
   const todayRows = todayRecords.map(r => `
     <tr>
@@ -279,13 +271,9 @@ const renderDashboard = ({ todayRecords, missing, weeklySummary, users, tracked,
 
   return layout('Dashboard', 'home', `
     <div class="grid">
-      <div class="pin-box">
-        <h3 style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:0.25rem;">PIN de registro</h3>
-        <div class="pin-code" id="pin-display">${pin}</div>
-        <div class="pin-ttl">Cambia en <span id="pin-ttl">${ttl}</span>s</div>
-      </div>
       <div class="card"><h3>Trackeados</h3><div class="value">${tracked.length}</div></div>
       <div class="card"><h3>Presentes hoy</h3><div class="value green">${presentCount}</div></div>
+      <div class="card"><h3>Jornada completa</h3><div class="value ${completeCount === presentCount ? 'green' : 'yellow'}">${completeCount}</div></div>
       <div class="card"><h3>Sin registro</h3><div class="value ${missing.length > 0 ? 'red' : 'green'}">${missing.length}</div></div>
       <div class="card"><h3>Horas equipo (semana)</h3><div class="value">${Math.round(weeklyHours * 10) / 10}</div></div>
     </div>
@@ -301,20 +289,6 @@ const renderDashboard = ({ todayRecords, missing, weeklySummary, users, tracked,
     ${missing.length > 0 ? `<div class="card"><h3>⚠️ Faltantes</h3>
       <table><thead><tr><th>Persona</th><th>Estado</th></tr></thead><tbody>${missingRows}</tbody></table>
     </div>` : ''}
-
-    <script>
-      let ttl = ${ttl};
-      setInterval(() => {
-        ttl--;
-        if (ttl <= 0) {
-          fetch('/dashboard/api/pin').then(r => r.json()).then(d => {
-            document.getElementById('pin-display').textContent = d.pin;
-            ttl = d.ttl;
-          });
-        }
-        document.getElementById('pin-ttl').textContent = Math.max(0, ttl);
-      }, 1000);
-    </script>
   `);
 };
 
@@ -483,7 +457,7 @@ const renderVerifySuccess = ({ user, record, action_type, time, alreadyComplete 
     <div class="success-box">
       <h2>✅ Registrado</h2>
       <p style="margin-top:0.5rem"><strong>${label}</strong> a las <strong>${time}</strong></p>
-      <p style="color:var(--text-muted);font-size:0.85rem;margin-top:0.25rem">${name} — ${dayjs().format('DD/MM/YYYY')}</p>
+      <p style="color:var(--text-muted);font-size:0.85rem;margin-top:0.25rem">${name} — ${t.now().format('DD/MM/YYYY')}</p>
     </div>
     <div class="verify-card" style="margin-top:1rem">${statusRows}</div>`);
 };
