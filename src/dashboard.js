@@ -88,11 +88,12 @@ const setupDashboard = (boltApp) => {
       return;
     }
 
-    const slackId = verify.peekToken(token);
-    if (!slackId) {
+    const peek = verify.peekToken(token);
+    if (!peek) {
       res.send(renderVerifyError('Link expirado', 'Este link ya fue usado o expiró. Generá uno nuevo con /marcar en Slack.'));
       return;
     }
+    const slackId = peek.slackId;
 
     const today = t.today();
     const user = db.getUser(slackId);
