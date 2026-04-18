@@ -23,15 +23,11 @@ const setupDemo = (app) => {
 
   const isDemoUser = (userId) => userId === SUPER_ADMIN;
 
-  app.command('/demo', async ({ command, ack, client }) => {
+  app.command('/demo', async ({ command, ack, respond, client }) => {
     await ack();
 
     if (!isDemoUser(command.user_id)) {
-      await client.chat.postEphemeral({
-        channel: command.channel_id,
-        user: command.user_id,
-        text: '🔒 Solo el super admin puede usar `/demo`.',
-      });
+      await respond({ response_type: 'ephemeral', text: '🔒 Solo el super admin puede usar `/demo`.' });
       return;
     }
 
@@ -43,7 +39,7 @@ const setupDemo = (app) => {
     try {
       // ─── /demo (sin sub) o /demo ayuda ────────────────────────────
       if (!sub || sub === 'ayuda') {
-        await client.chat.postEphemeral({ channel: command.channel_id, user: userId, text: DEMO_HELP });
+        await respond({ response_type: 'ephemeral', text: DEMO_HELP });
         return;
       }
 
@@ -52,41 +48,28 @@ const setupDemo = (app) => {
         db.db.prepare('DELETE FROM records WHERE slack_id = ? AND date = ?').run(userId, today);
         db.db.prepare('DELETE FROM activity_pings WHERE slack_id = ? AND date = ?').run(userId, today);
         db.db.prepare('DELETE FROM day_overrides WHERE slack_id = ? AND date = ?').run(userId, today);
-        await client.chat.postEphemeral({
-          channel: command.channel_id,
-          user: userId,
-          text: `🗑️ *Reset completo.* Registro de hoy borrado.\nPodés volver a testear \`/marcar\` desde cero.`,
-        });
+        await respond({ response_type: 'ephemeral', text: '🗑️ *Reset completo.* Registro de hoy borrado.\nPodés volver a testear `/marcar` desde cero.' });
         return;
       }
 
       // ─── /demo recordatorio ────────────────────────────────────────
       if (sub === 'recordatorio') {
-        await client.chat.postMessage({
-          channel: userId,
-          text: texts.reminders.entryMissing(),
-        });
-        await client.chat.postEphemeral({ channel: command.channel_id, user: userId, text: '✅ DM de recordatorio enviado.' });
+        await client.chat.postMessage({ channel: userId, text: texts.reminders.entryMissing() });
+        await respond({ response_type: 'ephemeral', text: '✅ DM de recordatorio enviado. Fijate en tus mensajes directos.' });
         return;
       }
 
       // ─── /demo almuerzo ────────────────────────────────────────────
       if (sub === 'almuerzo') {
-        await client.chat.postMessage({
-          channel: userId,
-          text: texts.reminders.lunchMissing,
-        });
-        await client.chat.postEphemeral({ channel: command.channel_id, user: userId, text: '✅ DM de almuerzo enviado.' });
+        await client.chat.postMessage({ channel: userId, text: texts.reminders.lunchMissing });
+        await respond({ response_type: 'ephemeral', text: '✅ DM de almuerzo enviado.' });
         return;
       }
 
       // ─── /demo salida ──────────────────────────────────────────────
       if (sub === 'salida') {
-        await client.chat.postMessage({
-          channel: userId,
-          text: texts.reminders.exitMissing,
-        });
-        await client.chat.postEphemeral({ channel: command.channel_id, user: userId, text: '✅ DM de salida enviado.' });
+        await client.chat.postMessage({ channel: userId, text: texts.reminders.exitMissing });
+        await respond({ response_type: 'ephemeral', text: '✅ DM de salida enviado.' });
         return;
       }
 
@@ -94,12 +77,8 @@ const setupDemo = (app) => {
       if (sub === 'ping') {
         const pingId = db.createPing(userId, today, now);
         const pingBlocks = buildPingMessage(pingId);
-        await client.chat.postMessage({
-          channel: userId,
-          text: '🏓 Check de actividad — ¿seguís ahí?',
-          blocks: pingBlocks,
-        });
-        await client.chat.postEphemeral({ channel: command.channel_id, user: userId, text: `✅ Ping enviado. Tenés ${PING_TIMEOUT_MIN} minutos para responder.` });
+        await client.chat.postMessage({ channel: userId, text: '🏓 Check de actividad — ¿seguís ahí?', blocks: pingBlocks });
+        await respond({ response_type: 'ephemeral', text: `✅ Ping enviado. Tenés ${PING_TIMEOUT_MIN} minutos para responder.` });
         return;
       }
 
@@ -107,25 +86,22 @@ const setupDemo = (app) => {
       if (sub === 'cierre') {
         const record = db.getRecord(userId, today);
         if (!record?.entry_time) {
-          await client.chat.postEphemeral({ channel: command.channel_id, user: userId, text: '⚠️ No tenés entrada registrada hoy. Hacé \`/marcar\` primero.' });
+          await respond({ response_type: 'ephemeral', text: '⚠️ No tenés entrada registrada hoy. Hacé `/marcar` primero.' });
           return;
         }
         db.fillMissingLunch(userId, today, record);
         db.updateField(userId, today, 'exit_time', now);
-        await client.chat.postMessage({
-          channel: userId,
-          text: texts.reminders.exitAutoClosedUser(now),
-        });
-        await client.chat.postEphemeral({ channel: command.channel_id, user: userId, text: `✅ Cierre automático simulado. Salida registrada a las *${now}*.` });
+        await client.chat.postMessage({ channel: userId, text: texts.reminders.exitAutoClosedUser(now) });
+        await respond({ response_type: 'ephemeral', text: `✅ Cierre automático simulado. Salida registrada a las *${now}*.` });
         return;
       }
 
       // ─── /demo reporte ─────────────────────────────────────────────
       if (sub === 'reporte') {
         const s = t.weekStart(), e = t.today();
-        const blocks = buildWeeklyReport(db.getWeeklySummary(s, e), s, e);
-        await client.chat.postMessage({ channel: userId, text: '📊 Reporte semanal (demo)', blocks });
-        await client.chat.postEphemeral({ channel: command.channel_id, user: userId, text: '✅ Reporte enviado por DM.' });
+        const reportBlocks = buildWeeklyReport(db.getWeeklySummary(s, e), s, e);
+        await client.chat.postMessage({ channel: userId, text: '📊 Reporte semanal (demo)', blocks: reportBlocks });
+        await respond({ response_type: 'ephemeral', text: '✅ Reporte enviado por DM.' });
         return;
       }
 
@@ -139,22 +115,19 @@ const setupDemo = (app) => {
         const daysElapsed = db.countWorkdaysInRange(weekStart, today);
         const expected = Math.round(daysElapsed * EXPECTED * 10) / 10;
         const diff = Math.round((totalWorked - expected) * 10) / 10;
-
         const fields = ['entry_time', 'lunch_start', 'lunch_end', 'exit_time'];
         const labels = { entry_time: '🟢 Entrada', lunch_start: '🍽️ Inicio almuerzo', lunch_end: '⏱️ Fin almuerzo', exit_time: '🔴 Salida' };
         const statusLines = fields.map(f => `${labels[f]}: ${record?.[f] || '_pendiente_'}`).join('\n');
-
         const balanceIcon = diff >= 0 ? '🟢' : (Math.abs(diff) > 2 ? '🔴' : '🟡');
-        const text = `📊 *Tu estado hoy — ${today}*\n${statusLines}\n\n📅 *Balance semanal:*\nTrabajadas: *${totalWorked}hs* / Esperadas: *${expected}hs*\n${balanceIcon} Diferencia: *${diff > 0 ? '+' : ''}${diff}hs*`;
-        await client.chat.postEphemeral({ channel: command.channel_id, user: userId, text });
+        await respond({ response_type: 'ephemeral', text: `📊 *Tu estado hoy — ${today}*\n${statusLines}\n\n📅 *Balance semanal:*\nTrabajadas: *${totalWorked}hs* / Esperadas: *${expected}hs*\n${balanceIcon} Diferencia: *${diff > 0 ? '+' : ''}${diff}hs*` });
         return;
       }
 
-      await client.chat.postEphemeral({ channel: command.channel_id, user: userId, text: `❓ Sub-comando desconocido: \`${sub}\`\n\nUsá \`/demo\` para ver las opciones.` });
+      await respond({ response_type: 'ephemeral', text: `❓ Sub-comando desconocido: \`${sub}\`\n\nUsá \`/demo\` para ver las opciones.` });
 
     } catch (err) {
       console.error('[demo] Error:', err);
-      await client.chat.postEphemeral({ channel: command.channel_id, user: userId, text: `❌ Error: ${err.message}` });
+      await respond({ response_type: 'ephemeral', text: `❌ Error: ${err.message}` });
     }
   });
 
