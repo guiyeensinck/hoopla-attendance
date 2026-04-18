@@ -3,9 +3,23 @@ const t = require('./time');
 const dayjs = t.dayjs;
 const db = require('./database');
 const verify = require('./verification');
+const { getNextAction } = require('./blocks');
+
+const dashboardAuth = (req, res, next) => {
+  const token = process.env.DASHBOARD_TOKEN;
+  if (!token) return next();
+  const auth = req.headers['authorization'];
+  if (auth && auth.startsWith('Basic ')) {
+    const [, pass] = Buffer.from(auth.slice(6), 'base64').toString().split(':');
+    if (pass === token) return next();
+  }
+  res.set('WWW-Authenticate', 'Basic realm="Hoopla Asistencia"');
+  res.status(401).send('Acceso no autorizado');
+};
 
 const setupDashboard = (boltApp) => {
   const router = express.Router();
+  router.use(dashboardAuth);
 
   // ─── Dashboard home ──────────────────────────────────────────────
   router.get('/', (req, res) => {
@@ -140,6 +154,14 @@ const setupDashboard = (boltApp) => {
     try {
       const updated = db.updateField(slackId, today, nextAction, time);
       db.updateLastSeen(slackId, today, time);
+
+      if (nextAction === 'entry_time') {
+        const clientIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || '';
+        const officeIps = (process.env.OFFICE_IP || '').split(',').map(s => s.trim()).filter(Boolean);
+        const location = officeIps.length === 0 || officeIps.includes(clientIp) ? 'office' : 'remote';
+        db.setLocation(slackId, today, location);
+      }
+
       const user = db.getUser(slackId);
       res.send(renderVerifySuccess({ user, record: updated, action_type: nextAction, time, alreadyComplete: false }));
     } catch (err) {
@@ -187,6 +209,8 @@ const STYLES = `
   .badge.missing { background: rgba(255,107,107,0.15); color: var(--red); }
   .badge.admin { background: rgba(108,92,231,0.15); color: var(--accent-light); }
   .badge.tracked { background: rgba(0,184,148,0.15); color: var(--green); }
+  .badge.office { background: rgba(0,184,148,0.15); color: var(--green); }
+  .badge.remote { background: rgba(253,203,110,0.15); color: var(--yellow); }
   .filters { display: flex; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap; align-items: end; }
   .filters label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); display: block; margin-bottom: 0.25rem; }
   .filters input, .filters select { background: var(--surface); border: 1px solid var(--border); color: var(--text); padding: 0.5rem 0.75rem; border-radius: 4px; font-family: inherit; font-size: 0.85rem; }
@@ -251,6 +275,12 @@ const miniLayout = (title, body) => `
   ${STYLES}
 </head><body><div class="verify-container">${body}</div></body></html>`;
 
+const locationBadge = (location) => {
+  if (location === 'office') return '<span class="badge office">🏢 Oficina</span>';
+  if (location === 'remote') return '<span class="badge remote">🏠 Casa</span>';
+  return '<span style="color:var(--text-muted)">—</span>';
+};
+
 // ═══════════════════════════════════════════════════════════════════
 // DASHBOARD HOME (with PIN)
 // ═══════════════════════════════════════════════════════════════════
@@ -265,6 +295,7 @@ const renderDashboard = ({ todayRecords, missing, weeklySummary, users, tracked,
       <td>${r.real_name || r.name}</td><td>${r.entry_time || '—'}</td>
       <td>${r.lunch_start || '—'} – ${r.lunch_end || '—'}</td>
       <td>${r.exit_time || '—'}</td><td>${r.total_hours ? r.total_hours + 'hs' : '—'}</td>
+      <td>${locationBadge(r.location)}</td>
       <td><span class="badge ${r.exit_time ? 'complete' : 'partial'}">${r.exit_time ? 'Completo' : 'En curso'}</span></td>
     </tr>`).join('');
 
@@ -283,7 +314,7 @@ const renderDashboard = ({ todayRecords, missing, weeklySummary, users, tracked,
     <div class="card" style="margin-bottom:1.5rem">
       <h3>Hoy — ${dayjs(today).format('DD/MM/YYYY')}</h3>
       ${todayRecords.length > 0 ? `
-        <table><thead><tr><th>Persona</th><th>Entrada</th><th>Almuerzo</th><th>Salida</th><th>Horas</th><th>Estado</th></tr></thead>
+        <table><thead><tr><th>Persona</th><th>Entrada</th><th>Almuerzo</th><th>Salida</th><th>Horas</th><th>Lugar</th><th>Estado</th></tr></thead>
         <tbody>${todayRows}</tbody></table>
       ` : '<p class="empty">No hay registros para hoy</p>'}
     </div>
@@ -308,6 +339,7 @@ const renderRecords = ({ records, users, startDate, endDate, selectedUser }) => 
     return `<tr><td>${dayjs(r.date).format('DD/MM/YYYY')}</td><td>${r.real_name || r.name}</td>
       <td>${r.entry_time || '—'}</td><td>${r.lunch_start || '—'}</td><td>${r.lunch_end || '—'}</td>
       <td>${r.exit_time || '—'}</td><td>${r.total_hours ? r.total_hours + 'hs' : '—'}</td>
+      <td>${locationBadge(r.location)}</td>
       <td><span class="badge ${st}">${lb}</span></td></tr>`;
   }).join('');
   return layout('Registros', 'records', `
@@ -318,7 +350,7 @@ const renderRecords = ({ records, users, startDate, endDate, selectedUser }) => 
       <button type="submit">Filtrar</button>
     </form>
     <div class="card">${records.length > 0 ? `<table><thead><tr>
-      <th>Fecha</th><th>Persona</th><th>Entrada</th><th>Almuerzo ini</th><th>Almuerzo fin</th><th>Salida</th><th>Horas</th><th>Estado</th>
+      <th>Fecha</th><th>Persona</th><th>Entrada</th><th>Almuerzo ini</th><th>Almuerzo fin</th><th>Salida</th><th>Horas</th><th>Lugar</th><th>Estado</th>
     </tr></thead><tbody>${rows}</tbody></table>` : '<p class="empty">No hay registros</p>'}</div>`);
 };
 
@@ -388,15 +420,6 @@ const STATUS_LABELS = {
   lunch_start: '🍽️ Inicio almuerzo',
   lunch_end: '🔄 Fin almuerzo',
   exit_time: '🔴 Salida',
-};
-
-const getNextAction = (record) => {
-  if (!record || !record.entry_time) return 'entry_time';
-  if (!record.lunch_start) return 'lunch_start';
-  if (!record.lunch_end) return 'lunch_end';
-  if (!record.exit_time) return 'exit_time';
-  if (record.auto_closed === 1) return 'exit_time';
-  return null;
 };
 
 const renderVerifyForm = ({ token, user, record, today, nextAction }) => {

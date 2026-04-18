@@ -6,6 +6,7 @@ const blocks = require('./blocks');
 const txt = require('./texts');
 const { setupScheduler } = require('./scheduler');
 const { setupDashboard } = require('./dashboard');
+const { setupDemo } = require('./demo');
 const { createToken } = require('./verification');
 
 const EXPECTED_HOURS = parseFloat(process.env.EXPECTED_HOURS_PER_DAY || '8');
@@ -366,6 +367,7 @@ app.event('team_join', async ({ event }) => {
   const PORT = process.env.PORT || 3000;
   setupDashboard(app);
   setupScheduler(app);
+  setupDemo(app);
   await app.start(PORT);
   console.log(`\n  ⚡ Hoopla Asistencia running — port ${PORT}\n  → Dashboard: http://localhost:${PORT}/dashboard`);
   if (SOLO_MODE) console.log(`  → Solo mode: ON (${SOLO_USER_ID})`);

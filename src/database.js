@@ -97,6 +97,7 @@ try { db.exec('ALTER TABLE users ADD COLUMN is_tracked INTEGER DEFAULT 0'); } ca
 try { db.exec('ALTER TABLE records ADD COLUMN work_mode TEXT DEFAULT \'office\''); } catch(e) {}
 try { db.exec('ALTER TABLE records ADD COLUMN last_seen TEXT'); } catch(e) {}
 try { db.exec('ALTER TABLE records ADD COLUMN auto_closed INTEGER DEFAULT 0'); } catch(e) {}
+try { db.exec('ALTER TABLE records ADD COLUMN location TEXT'); } catch(e) {}
 
 // ═══════════════════════════════════════════════════════════════════
 // USERS
@@ -148,6 +149,10 @@ const updateField = (slackId, date, field, value) => {
   return db.prepare('SELECT * FROM records WHERE slack_id = ? AND date = ?').get(slackId, date);
 };
 
+const setLocation = (slackId, date, location) => {
+  db.prepare('UPDATE records SET location = ? WHERE slack_id = ? AND date = ?').run(location, slackId, date);
+};
+
 const setWorkMode = (slackId, date, mode) => {
   getOrCreateRecord(slackId, date);
   db.prepare('UPDATE records SET work_mode = ? WHERE slack_id = ? AND date = ?').run(mode, slackId, date);
@@ -159,6 +164,17 @@ const getRecord = (slackId, date) => db.prepare('SELECT * FROM records WHERE sla
 const updateLastSeen = (slackId, date, time) => {
   getOrCreateRecord(slackId, date);
   db.prepare('UPDATE records SET last_seen = ? WHERE slack_id = ? AND date = ?').run(time, slackId, date);
+};
+
+const fillMissingLunch = (slackId, date, r) => {
+  if (!r.lunch_start) {
+    db.prepare('UPDATE records SET lunch_start = ?, lunch_end = ? WHERE slack_id = ? AND date = ?')
+      .run('13:00', '14:00', slackId, date);
+  } else if (r.lunch_start && !r.lunch_end) {
+    const autoEnd = dayjs(`${date} ${r.lunch_start}`).add(60, 'minute').format('HH:mm');
+    db.prepare('UPDATE records SET lunch_end = ? WHERE slack_id = ? AND date = ?')
+      .run(autoEnd, slackId, date);
+  }
 };
 
 /**
@@ -196,17 +212,7 @@ const autoCloseDay = (date, closeTime) => {
         .run(closeTime, r.slack_id, date);
     }
 
-    // Auto-fill missing lunch (default 1hr: 13:00-14:00)
-    if (!r.lunch_start) {
-      db.prepare('UPDATE records SET lunch_start = ?, lunch_end = ? WHERE slack_id = ? AND date = ?')
-        .run('13:00', '14:00', r.slack_id, date);
-    } else if (r.lunch_start && !r.lunch_end) {
-      // Started lunch but never ended — assume 1hr
-      const lunchStart = dayjs(`${date} ${r.lunch_start}`);
-      const autoEnd = lunchStart.add(60, 'minute').format('HH:mm');
-      db.prepare('UPDATE records SET lunch_end = ? WHERE slack_id = ? AND date = ?')
-        .run(autoEnd, r.slack_id, date);
-    }
+    fillMissingLunch(r.slack_id, date, r);
 
     // Set exit
     db.prepare('UPDATE records SET exit_time = ?, auto_closed = 1 WHERE slack_id = ? AND date = ?')
@@ -431,11 +437,17 @@ const getUserWeeklyRecords = (slackId, weekStart, weekEnd) => db.prepare(`
 `).all(slackId, weekStart, weekEnd);
 
 const countWorkdaysInRange = (startDate, endDate) => {
+  const holidays = new Set(
+    db.prepare("SELECT date FROM day_overrides WHERE type = 'holiday' AND slack_id IS NULL AND date BETWEEN ? AND ?")
+      .all(startDate, endDate)
+      .map(r => r.date)
+  );
   let count = 0;
   let d = dayjs(startDate);
   const end = dayjs(endDate);
   while (d.isBefore(end) || d.isSame(end, 'day')) {
-    if (d.day() !== 0 && d.day() !== 6) count++;
+    const ds = d.format('YYYY-MM-DD');
+    if (d.day() !== 0 && d.day() !== 6 && !holidays.has(ds)) count++;
     d = d.add(1, 'day');
   }
   return count;
@@ -443,12 +455,12 @@ const countWorkdaysInRange = (startDate, endDate) => {
 
 module.exports = {
   db, upsertUser, getUser, getAllUsers, getTrackedUsers, getAdminUsers, setAdmin, setTracked, isAdmin,
-  getOrCreateRecord, updateField, setWorkMode, getRecord, updateLastSeen, autoCloseDay,
+  getOrCreateRecord, updateField, setWorkMode, setLocation, getRecord, updateLastSeen, autoCloseDay,
   addOverride, removeOverride, getOverridesForDate, getUserOverride, isHoliday, getOverridesByRange, isUserExemptToday, isFieldDay,
   getRecordsByDateRange, getUserRecordsByDateRange, getMissingToday, getIncompleteToday, getNoLunchYet,
   getWeeklySummary, getOvertimeToday, getDailySummary, getMonthlyExportData,
   createPing, respondToPing, expirePings, getPendingPings, getTodayPingCount, getPingSummary, getPingsByDateRange,
   logPresence, getPresenceByDate, getPresenceSummary,
   startMeeting, endMeeting, getActiveMeeting, getUserMeetings, getInMeetingUsers,
-  getUserWeeklyRecords, countWorkdaysInRange,
+  getUserWeeklyRecords, countWorkdaysInRange, fillMissingLunch,
 };

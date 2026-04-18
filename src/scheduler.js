@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const t = require('./time');
 const fs = require('fs');
 const db = require('./database');
+const texts = require('./texts');
 const { buildWeeklyReport, buildMissingAlert, buildDailySummary, buildOvertimeAlert, buildLunchReminder } = require('./blocks');
 const { runPingCycle, runPresenceCheck } = require('./activity');
 const { generateMonthlyExcel } = require('./excel');
@@ -25,7 +26,7 @@ const setupScheduler = (app) => {
         if (db.isUserExemptToday(user.slack_id, today)) continue;
         await app.client.chat.postMessage({
           channel: user.slack_id,
-          text: '🔔 Son las 9:35 y todavía no registraste tu entrada. Escribí `/marcar` para fichar.',
+          text: texts.reminders.entryMissing(),
         });
       }
       if (missing.length > 0) console.log(`[scheduler] 9:35 entry reminder → ${missing.length} personas`);
@@ -57,7 +58,7 @@ const setupScheduler = (app) => {
         if (db.isFieldDay(r.slack_id, today)) continue;
         await app.client.chat.postMessage({
           channel: r.slack_id,
-          text: '🍽️ Son las 14:00 y todavía no registraste tu almuerzo. Escribí `/marcar` para registrarlo.',
+          text: texts.reminders.lunchMissing,
           blocks: buildLunchReminder(),
         });
       }
@@ -80,24 +81,18 @@ const setupScheduler = (app) => {
         if (isField || hasMeeting) {
           // Auto-close now
           if (hasMeeting) db.endMeeting(hasMeeting.id, '18:30');
-          if (!r.lunch_start) {
-            db.updateField(r.slack_id, today, 'lunch_start', '13:00');
-            db.updateField(r.slack_id, today, 'lunch_end', '14:00');
-          } else if (r.lunch_start && !r.lunch_end) {
-            const autoEnd = t.dayjs(`${today} ${r.lunch_start}`).add(60, 'minute').format('HH:mm');
-            db.updateField(r.slack_id, today, 'lunch_end', autoEnd);
-          }
+          db.fillMissingLunch(r.slack_id, today, r);
           db.updateField(r.slack_id, today, 'exit_time', '18:30');
           await app.client.chat.postMessage({
             channel: r.slack_id,
-            text: '🔔 Tu jornada de hoy fue cerrada automáticamente a las 18:30.',
+            text: texts.reminders.exitAutoClosedField,
           });
           console.log(`[scheduler] Auto-closed field/meeting: ${r.real_name || r.name}`);
         } else {
           // Office worker — send reminder
           await app.client.chat.postMessage({
             channel: r.slack_id,
-            text: '🔔 Son las 18:30 y todavía no registraste tu salida. Escribí `/marcar` para completar. Si no lo hacés, se va a cerrar automáticamente.',
+            text: texts.reminders.exitMissing,
           });
         }
       }
@@ -116,7 +111,7 @@ const setupScheduler = (app) => {
         const exitLabel = c.exit_time === '18:30' ? '18:30 (horario estándar)' : `${c.exit_time} (última actividad registrada)`;
         await app.client.chat.postMessage({
           channel: c.slack_id,
-          text: `🔒 Tu jornada de hoy fue cerrada automáticamente.\nSalida registrada: *${exitLabel}*\nSi esto es incorrecto, avisale al admin.`,
+          text: texts.reminders.exitAutoClosedUser(exitLabel),
         });
       }
 
