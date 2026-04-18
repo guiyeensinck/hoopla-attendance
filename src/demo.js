@@ -37,6 +37,13 @@ const setupDemo = (app) => {
     const now = t.currentTime();
 
     try {
+      // Garantizar que el usuario exista en la DB (necesario para FK constraints)
+      const profile = await client.users.info({ user: userId });
+      db.upsertUser({
+        slack_id: userId,
+        name: profile.user.name,
+        real_name: profile.user.real_name || profile.user.name,
+      });
       // ─── /demo (sin sub) o /demo ayuda ────────────────────────────
       if (!sub || sub === 'ayuda') {
         await respond({ response_type: 'ephemeral', text: DEMO_HELP });
