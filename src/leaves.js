@@ -3,25 +3,90 @@ const dayjs = t.dayjs;
 const db = require('./database');
 
 // ─── Leave type definitions ────────────────────────────────────────
+// group: used to aggregate quota checks
 const LEAVE_TYPES = {
-  vacation:    { label: 'Vacaciones',           emoji: '🏖️', override: 'vacation',   multi: true  },
-  day_off:     { label: 'Día libre',            emoji: '📅', override: 'day_off',    multi: false },
-  exam:        { label: 'Día de exámenes',      emoji: '📚', override: 'day_off',    multi: false },
-  half_am:     { label: 'Medio día — mañana',   emoji: '🌅', override: 'day_off',    multi: false },
-  half_pm:     { label: 'Medio día — tarde',    emoji: '🌇', override: 'early_exit', multi: false },
-  medical:     { label: 'Turno médico',         emoji: '🏥', override: 'medical',    multi: false },
-  personal:    { label: 'Asunto personal',      emoji: '🙏', override: 'day_off',    multi: false },
-  bereavement: { label: 'Duelo familiar',       emoji: '💙', override: 'absent',     multi: true  },
+  vacation_summer: {
+    label: 'Vacaciones de verano',
+    emoji: '🏖️',
+    override: 'vacation',
+    multi: true,
+    group: 'vacation',
+    hint: '14 días corridos · Oct–Abr · Inicia lunes · 4 semanas de anticipación',
+  },
+  vacation_winter: {
+    label: 'Vacaciones de invierno',
+    emoji: '⛷️',
+    override: 'vacation',
+    multi: true,
+    group: 'vacation',
+    hint: '7 días corridos · Jul–Sep · Inicia lunes · 4 semanas de anticipación',
+  },
+  personal: {
+    label: 'Trámite personal (día completo)',
+    emoji: '📅',
+    override: 'day_off',
+    multi: false,
+    group: 'personal',
+    hint: '2 días/año · máx 1 día c/2 meses · 2 semanas de anticipación',
+  },
+  personal_am: {
+    label: 'Trámite personal (½ día AM — hasta 13hs)',
+    emoji: '🌅',
+    override: 'day_off',
+    multi: false,
+    group: 'personal',
+    hint: '4 medios días/año · máx 2 medios días c/2 meses · 2 semanas anticipación',
+  },
+  personal_pm: {
+    label: 'Trámite personal (½ día PM — desde 15hs)',
+    emoji: '🌇',
+    override: 'early_exit',
+    multi: false,
+    group: 'personal',
+    hint: '4 medios días/año · máx 2 medios días c/2 meses · 2 semanas anticipación',
+  },
+  medical_am: {
+    label: 'Turno médico (AM — hasta 13hs)',
+    emoji: '🏥',
+    override: 'day_off',
+    multi: false,
+    group: 'medical',
+    hint: '4 medios días/año · requiere certificado',
+  },
+  medical_pm: {
+    label: 'Turno médico (PM — desde 15hs)',
+    emoji: '🏥',
+    override: 'early_exit',
+    multi: false,
+    group: 'medical',
+    hint: '4 medios días/año · requiere certificado',
+  },
+  exam: {
+    label: 'Día de examen',
+    emoji: '📚',
+    override: 'day_off',
+    multi: true,
+    group: 'exam',
+    hint: '10 días/año (5 por semestre) · máx 4/mes · 10 días hábiles anticipación · solo universitarios',
+  },
+  bereavement: {
+    label: 'Duelo familiar',
+    emoji: '💙',
+    override: 'absent',
+    multi: true,
+    group: 'other',
+    hint: 'Requiere documentación',
+  },
 };
 
-const typeInfo = (type) => LEAVE_TYPES[type] || { label: type, emoji: '📋', override: 'day_off', multi: false };
+const typeInfo = (type) => LEAVE_TYPES[type] || { label: type, emoji: '📋', override: 'day_off', multi: false, group: 'other', hint: '' };
 
 const periodLabel = (dateFrom, dateTo) =>
   dateFrom === dateTo
     ? dayjs(dateFrom).format('DD/MM/YYYY')
     : `${dayjs(dateFrom).format('DD/MM')} al ${dayjs(dateTo).format('DD/MM/YYYY')}`;
 
-// ─── Block builders ────────────────────────────────────────────────
+// ─── Modal builder ─────────────────────────────────────────────────
 
 const buildRequestModal = () => ({
   type: 'modal',
@@ -32,7 +97,10 @@ const buildRequestModal = () => ({
   blocks: [
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: '📋 Completá el formulario.\n\n⚠️ *Pedir no es otorgar* — tu solicitud será revisada. Te avisamos cuando haya una respuesta.' },
+      text: {
+        type: 'mrkdwn',
+        text: '📋 Completá el formulario.\n\n⚠️ *Pedir no es otorgar* — tu solicitud será revisada. Te avisamos cuando haya una respuesta.\n\n_Las políticas de RRHH aplican automáticamente. Si algo no está permitido, el sistema te lo indica antes de enviar._',
+      },
     },
     { type: 'divider' },
     {
@@ -43,17 +111,49 @@ const buildRequestModal = () => ({
         type: 'static_select',
         action_id: 'sel_type',
         placeholder: { type: 'plain_text', text: 'Elegí...' },
-        options: Object.entries(LEAVE_TYPES).map(([value, { label, emoji }]) => ({
-          text: { type: 'plain_text', text: `${emoji}  ${label}` },
-          value,
-        })),
+        option_groups: [
+          {
+            label: { type: 'plain_text', text: '🏖️  Vacaciones' },
+            options: [
+              { text: { type: 'plain_text', text: '🏖️  Vacaciones de verano (14 días · Oct–Abr)' }, value: 'vacation_summer' },
+              { text: { type: 'plain_text', text: '⛷️  Vacaciones de invierno (7 días · Jul–Sep)' }, value: 'vacation_winter' },
+            ],
+          },
+          {
+            label: { type: 'plain_text', text: '📅  Trámites personales' },
+            options: [
+              { text: { type: 'plain_text', text: '📅  Trámite personal — día completo' }, value: 'personal' },
+              { text: { type: 'plain_text', text: '🌅  Trámite personal — ½ día AM (hasta 13hs)' }, value: 'personal_am' },
+              { text: { type: 'plain_text', text: '🌇  Trámite personal — ½ día PM (desde 15hs)' }, value: 'personal_pm' },
+            ],
+          },
+          {
+            label: { type: 'plain_text', text: '🏥  Médico' },
+            options: [
+              { text: { type: 'plain_text', text: '🏥  Turno médico — AM (hasta 13hs)' }, value: 'medical_am' },
+              { text: { type: 'plain_text', text: '🏥  Turno médico — PM (desde 15hs)' }, value: 'medical_pm' },
+            ],
+          },
+          {
+            label: { type: 'plain_text', text: '📚  Estudio' },
+            options: [
+              { text: { type: 'plain_text', text: '📚  Día de examen (solo universitarios)' }, value: 'exam' },
+            ],
+          },
+          {
+            label: { type: 'plain_text', text: '💙  Otros' },
+            options: [
+              { text: { type: 'plain_text', text: '💙  Duelo familiar' }, value: 'bereavement' },
+            ],
+          },
+        ],
       },
     },
     {
       type: 'input',
       block_id: 'blk_from',
-      label: { type: 'plain_text', text: 'Fecha' },
-      hint: { type: 'plain_text', text: 'Para un solo día, dejá las dos fechas iguales.' },
+      label: { type: 'plain_text', text: 'Fecha de inicio' },
+      hint: { type: 'plain_text', text: 'Para medio día o un solo día, dejá las dos fechas iguales.' },
       element: {
         type: 'datepicker',
         action_id: 'sel_from',
@@ -64,7 +164,7 @@ const buildRequestModal = () => ({
     {
       type: 'input',
       block_id: 'blk_to',
-      label: { type: 'plain_text', text: 'Fecha hasta' },
+      label: { type: 'plain_text', text: 'Fecha de fin' },
       element: {
         type: 'datepicker',
         action_id: 'sel_to',
@@ -82,13 +182,22 @@ const buildRequestModal = () => ({
         action_id: 'sel_notes',
         multiline: true,
         max_length: 300,
-        placeholder: { type: 'plain_text', text: 'Ej: viaje programado, turno con el Dr. García, etc.' },
+        placeholder: { type: 'plain_text', text: 'Ej: viaje programado, turno con el Dr. García...' },
       },
+    },
+    {
+      type: 'context',
+      elements: [{
+        type: 'mrkdwn',
+        text: '📋 *Políticas resumidas:*\n• Vacaciones: +4 semanas anticipación, inicia lunes, feriados no suman días\n• Trámites: 2 días/año, máx 1 día c/2 meses, no en semana corta ni semana previa\n• Médico: 4 medios días/año con certificado\n• Examen: 10 días/año (5 por semestre), máx 4/mes, +10 días hábiles anticipación\n• No mezclar examen + médico + trámites en la misma semana',
+      }],
     },
   ],
 });
 
-const buildAdminNotificationBlocks = (requestId, userName, ti, period, notes) => [
+// ─── Block builders ────────────────────────────────────────────────
+
+const buildAdminNotificationBlocks = (requestId, userName, ti, period, notes, validationWarning) => [
   {
     type: 'header',
     text: { type: 'plain_text', text: '📋 Nueva solicitud de ausencia' },
@@ -102,6 +211,10 @@ const buildAdminNotificationBlocks = (requestId, userName, ti, period, notes) =>
       ...(notes ? [{ type: 'mrkdwn', text: `*Nota:*\n_${notes}_` }] : []),
     ],
   },
+  ...(validationWarning ? [{
+    type: 'section',
+    text: { type: 'mrkdwn', text: `⚠️ *Advertencia:* ${validationWarning}` },
+  }] : []),
   {
     type: 'actions',
     block_id: 'blk_actions',
@@ -114,7 +227,7 @@ const buildAdminNotificationBlocks = (requestId, userName, ti, period, notes) =>
         value: String(requestId),
         confirm: {
           title: { type: 'plain_text', text: '¿Aprobás esta solicitud?' },
-          text: { type: 'mrkdwn', text: `Se crearán los días correspondientes en el sistema.` },
+          text: { type: 'mrkdwn', text: 'Se crearán los días correspondientes en el sistema.' },
           confirm: { type: 'plain_text', text: 'Sí, aprobar' },
           deny: { type: 'plain_text', text: 'Cancelar' },
         },
@@ -170,17 +283,14 @@ const buildEmployeeConfirmBlocks = (requestId, ti, period, notes) => [
   },
   {
     type: 'context',
-    elements: [{ type: 'mrkdwn', text: `_⚠️ Recordá que pedir no es otorgar. No contés con el tiempo libre hasta recibir confirmación. · #${requestId}_` }],
+    elements: [{ type: 'mrkdwn', text: `_⚠️ Recordá: pedir no es otorgar. No contés con el tiempo libre hasta recibir confirmación. · #${requestId}_` }],
   },
 ];
 
 const buildEmployeeResolvedBlocks = (ti, period, adminName, approved, reason) => {
   if (approved) {
     return [
-      {
-        type: 'section',
-        text: { type: 'mrkdwn', text: `🎉 *Tu solicitud fue aprobada*` },
-      },
+      { type: 'section', text: { type: 'mrkdwn', text: `🎉 *Tu solicitud fue aprobada*` } },
       {
         type: 'section',
         fields: [
@@ -189,17 +299,11 @@ const buildEmployeeResolvedBlocks = (ti, period, adminName, approved, reason) =>
           { type: 'mrkdwn', text: `*Aprobado por:*\n${adminName}` },
         ],
       },
-      {
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: `_Los días ya están registrados en el sistema._ ✓` }],
-      },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: '_Los días ya están registrados en el sistema._ ✓' }] },
     ];
   }
   return [
-    {
-      type: 'section',
-      text: { type: 'mrkdwn', text: `❌ *Tu solicitud no fue aprobada*` },
-    },
+    { type: 'section', text: { type: 'mrkdwn', text: `❌ *Tu solicitud no fue aprobada*` } },
     {
       type: 'section',
       fields: [
@@ -209,10 +313,7 @@ const buildEmployeeResolvedBlocks = (ti, period, adminName, approved, reason) =>
         ...(reason ? [{ type: 'mrkdwn', text: `*Motivo:*\n_${reason}_` }] : []),
       ],
     },
-    {
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: `_Si tenés dudas, hablá con tu admin directamente._` }],
-    },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: '_Si tenés dudas, hablá con tu admin directamente._' }] },
   ];
 };
 
@@ -231,12 +332,10 @@ const applyOverrides = (request, adminId) => {
   }
 };
 
-// Update all stored admin notification messages to reflect the resolved state
 const updateAdminMessages = async (client, requestId, requestBody, resolvedBlocks, resolvedText) => {
   const notifications = db.getLeaveAdminNotifications(requestId);
   const updatedTs = new Set();
 
-  // Always update the message the admin clicked on
   if (requestBody?.channel?.id && requestBody?.message?.ts) {
     try {
       await client.chat.update({
@@ -249,7 +348,6 @@ const updateAdminMessages = async (client, requestId, requestBody, resolvedBlock
     } catch(e) { console.error('[leaves] Error updating clicked message:', e.message); }
   }
 
-  // Update all other stored notifications
   for (const n of notifications) {
     if (updatedTs.has(n.message_ts)) continue;
     try {
@@ -262,6 +360,45 @@ const updateAdminMessages = async (client, requestId, requestBody, resolvedBlock
       updatedTs.add(n.message_ts);
     } catch(e) { console.error('[leaves] Error updating stored notification:', e.message); }
   }
+};
+
+// ─── Quota summary text (shown in /mi-balance) ─────────────────────
+
+const buildQuotaSummary = (slackId) => {
+  const year = dayjs().year();
+  const user = db.getUser(slackId);
+
+  // Vacation blocks
+  const summerUsed = db.countVacationBlocksThisYear(slackId, year, 'vacation_summer');
+  const winterUsed = db.countVacationBlocksThisYear(slackId, year, 'vacation_winter');
+
+  // Personal half-days
+  const personalUsedHD = db.countPersonalHalfDaysInWindow(slackId, `${year}-01-01`, `${year}-12-31`);
+
+  // Medical half-days
+  const medicalUsedHD = db.countApprovedLeaveHalfDays(slackId, year, ['medical_am', 'medical_pm']);
+
+  // Exam days (by semester)
+  const sem1Used = db.countExamDaysInSemester(slackId, year, 1);
+  const sem2Used = db.countExamDaysInSemester(slackId, year, 2);
+
+  const line = (label, used, total, unit = '') =>
+    `${used >= total ? '🔴' : used > 0 ? '🟡' : '🟢'} ${label}: *${used}/${total}* ${unit}`;
+
+  const lines = [
+    `📊 *Tu balance de ausencias — ${year}*\n`,
+    line('Vacaciones verano', summerUsed, 1, 'bloque (14 días)'),
+    line('Vacaciones invierno', winterUsed, 1, 'bloque (7 días)'),
+    line('Trámites personales', personalUsedHD, 4, 'medios días (2 = 1 día completo)'),
+    line('Turnos médicos', medicalUsedHD, 4, 'medios días'),
+  ];
+
+  if (user?.is_student) {
+    lines.push(line(`Exámenes 1° sem`, sem1Used, 5, 'días'));
+    lines.push(line(`Exámenes 2° sem`, sem2Used, 5, 'días'));
+  }
+
+  return lines.join('\n');
 };
 
 // ─── Setup ────────────────────────────────────────────────────────
@@ -280,32 +417,70 @@ const setupLeaves = (app) => {
     }
   });
 
+  // ── /mi-balance — show quota summary ────────────────────────────
+  app.command('/mi-balance', async ({ command, ack, respond }) => {
+    await ack();
+    db.upsertUser({ slack_id: command.user_id, name: command.user_name, real_name: command.user_name });
+    try {
+      await respond({ response_type: 'ephemeral', text: buildQuotaSummary(command.user_id) });
+    } catch(e) { console.error('[leaves] /mi-balance error:', e.message); }
+  });
+
   // ── View submission: modal_leave_request ─────────────────────────
   app.view('modal_leave_request', async ({ view, ack, body, client }) => {
-    const vals = view.state.values;
-    const type     = vals.blk_type.sel_type.selected_option?.value;
+    const vals    = view.state.values;
+    const type    = vals.blk_type.sel_type.selected_option?.value;
     const dateFrom = vals.blk_from.sel_from.selected_date;
     const dateTo   = vals.blk_to.sel_to.selected_date;
     const notes    = vals.blk_notes?.sel_notes?.value || '';
     const userId   = body.user.id;
 
-    // Validate date range
-    if (dayjs(dateTo).isBefore(dayjs(dateFrom))) {
-      await ack({
-        response_action: 'errors',
-        errors: { blk_to: 'La fecha de fin no puede ser anterior a la de inicio.' },
-      });
+    if (!type || !dateFrom || !dateTo) {
+      await ack({ response_action: 'errors', errors: { blk_type: 'Completá todos los campos.' } });
       return;
     }
+
+    // ── Policy validation ─────────────────────────────────────────
+    const { errors } = db.validateLeaveRequest(userId, type, dateFrom, dateTo, notes);
+
+    if (errors.length > 0) {
+      // Return errors in the modal — map to appropriate field
+      const fieldErrors = {};
+      // Try to associate to the most relevant field
+      const dateError = errors.find(e =>
+        e.includes('fecha') || e.includes('lunes') || e.includes('anticipación') ||
+        e.includes('corridos') || e.includes('verano') || e.includes('invierno') ||
+        e.includes('julio') || e.includes('septiembre') || e.includes('abril')
+      );
+      const typeError = errors.find(e =>
+        e.includes('límite') || e.includes('bloque') || e.includes('semestre') ||
+        e.includes('mes') || e.includes('año') || e.includes('examen') ||
+        e.includes('universitarios') || e.includes('semana corta') || e.includes('mezclar')
+      );
+
+      if (dateError) fieldErrors.blk_from = dateError;
+      if (typeError && typeError !== dateError) fieldErrors.blk_type = typeError;
+
+      // If only one error, put it on from-date
+      if (errors.length === 1) {
+        fieldErrors.blk_from = errors[0];
+        delete fieldErrors.blk_type;
+      }
+
+      // Slack allows max 1 error per block
+      await ack({ response_action: 'errors', errors: fieldErrors });
+      return;
+    }
+
     await ack();
 
-    const requestId = db.createLeaveRequest(userId, type, dateFrom, dateTo, notes);
-    const ti = typeInfo(type);
-    const period = periodLabel(dateFrom, dateTo);
-    const user = db.getUser(userId);
+    const requestId  = db.createLeaveRequest(userId, type, dateFrom, dateTo, notes);
+    const ti         = typeInfo(type);
+    const period     = periodLabel(dateFrom, dateTo);
+    const user       = db.getUser(userId);
     const displayName = user?.real_name || user?.name || body.user.name;
 
-    // DM employee: confirmation
+    // DM employee
     try {
       await client.chat.postMessage({
         channel: userId,
@@ -314,7 +489,7 @@ const setupLeaves = (app) => {
       });
     } catch(e) { console.error('[leaves] Error DM employee:', e.message); }
 
-    // DM all admins: notification with approve/reject buttons
+    // DM all admins
     const admins = db.getAdminUsers();
     for (const admin of admins) {
       if (admin.slack_id === userId) continue;
@@ -322,11 +497,9 @@ const setupLeaves = (app) => {
         const msg = await client.chat.postMessage({
           channel: admin.slack_id,
           text: `📋 Nueva solicitud de ausencia de ${displayName}`,
-          blocks: buildAdminNotificationBlocks(requestId, displayName, ti, period, notes),
+          blocks: buildAdminNotificationBlocks(requestId, displayName, ti, period, notes, null),
         });
-        if (msg.ts) {
-          db.addLeaveAdminNotification(requestId, admin.slack_id, admin.slack_id, msg.ts);
-        }
+        if (msg.ts) db.addLeaveAdminNotification(requestId, admin.slack_id, admin.slack_id, msg.ts);
       } catch(e) { console.error(`[leaves] Error notifying admin ${admin.slack_id}:`, e.message); }
     }
 
@@ -340,22 +513,20 @@ const setupLeaves = (app) => {
     const adminId   = body.user.id;
 
     const request = db.getLeaveRequest(requestId);
-    if (!request || request.status !== 'pending') return; // Already handled
+    if (!request || request.status !== 'pending') return;
 
-    // Approve in DB + create day_overrides
     db.approveLeaveRequest(requestId, adminId);
     applyOverrides(request, adminId);
 
-    const ti = typeInfo(request.type);
-    const period = periodLabel(request.date_from, request.date_to);
-    const admin = db.getUser(adminId);
+    const ti       = typeInfo(request.type);
+    const period   = periodLabel(request.date_from, request.date_to);
+    const admin    = db.getUser(adminId);
     const adminName = admin?.real_name || admin?.name || adminId;
-    const userName = request.real_name || request.name || request.slack_id;
+    const userName  = request.real_name || request.name || request.slack_id;
 
     const resolvedBlocks = buildResolvedBlocks(requestId, userName, ti, period, adminName, true, null);
     await updateAdminMessages(client, requestId, body, resolvedBlocks, `✅ Solicitud aprobada — ${userName}`);
 
-    // DM employee
     try {
       await client.chat.postMessage({
         channel: request.slack_id,
@@ -371,8 +542,7 @@ const setupLeaves = (app) => {
   app.action('leave_reject', async ({ action, body, ack, client }) => {
     await ack();
     const requestId = parseInt(action.value, 10);
-
-    const request = db.getLeaveRequest(requestId);
+    const request   = db.getLeaveRequest(requestId);
     if (!request || request.status !== 'pending') return;
 
     try {
@@ -425,18 +595,16 @@ const setupLeaves = (app) => {
 
     db.rejectLeaveRequest(requestId, adminId, reason);
 
-    const ti = typeInfo(request.type);
-    const period = periodLabel(request.date_from, request.date_to);
-    const admin = db.getUser(adminId);
-    const adminName = admin?.real_name || admin?.name || adminId;
-    const userName = request.real_name || request.name || request.slack_id;
+    const ti        = typeInfo(request.type);
+    const period    = periodLabel(request.date_from, request.date_to);
+    const admin     = db.getUser(adminId);
+    const adminName  = admin?.real_name || admin?.name || adminId;
+    const userName   = request.real_name || request.name || request.slack_id;
 
-    // Build a fake body so updateAdminMessages can update the original message
-    const fakeBody = { channel: { id: channelId }, message: { ts: messageTs } };
+    const fakeBody   = { channel: { id: channelId }, message: { ts: messageTs } };
     const resolvedBlocks = buildResolvedBlocks(requestId, userName, ti, period, adminName, false, reason);
     await updateAdminMessages(client, requestId, fakeBody, resolvedBlocks, `❌ Solicitud rechazada — ${userName}`);
 
-    // DM employee
     try {
       await client.chat.postMessage({
         channel: request.slack_id,
@@ -448,7 +616,7 @@ const setupLeaves = (app) => {
     console.log(`[leaves] Request #${requestId} rejected by ${adminName}`);
   });
 
-  console.log('[leaves] /pedir configurado');
+  console.log('[leaves] /pedir y /mi-balance configurados');
 };
 
-module.exports = { setupLeaves, LEAVE_TYPES };
+module.exports = { setupLeaves, LEAVE_TYPES, buildQuotaSummary };

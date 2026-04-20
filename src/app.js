@@ -384,6 +384,32 @@ app.command('/admin', async ({ command, ack, respond, client }) => {
         await respond({ response_type: 'ephemeral', text: `🗓️ *Feriados ${year}* (${holidays.length} días):\n\n${lines}` });
         break;
       }
+      case 'estudiante': {
+        // /admin estudiante @usuario on|off
+        // Grants or revokes exam-day eligibility
+        const targetRaw = parts[1] || '';
+        const flag      = (parts[2] || '').toLowerCase();
+        if (!targetRaw || !['on','off'].includes(flag)) {
+          await respond({ response_type: 'ephemeral', text: '⚠️ Uso: `/admin estudiante @usuario on` o `off`\n\nActiva o desactiva los días de examen para el usuario.' });
+          return;
+        }
+        const mention = extractUserMention(targetRaw);
+        if (!mention) {
+          await respond({ response_type: 'ephemeral', text: '⚠️ No pude identificar el usuario. Asegurate de mencionarlo con @.' });
+          return;
+        }
+        // Ensure user exists
+        const targetUser = db.getUser(mention.id);
+        if (!targetUser) {
+          await respond({ response_type: 'ephemeral', text: `⚠️ Usuario \`${mention.id}\` no encontrado en la base de datos.` });
+          return;
+        }
+        db.setStudentFlag(mention.id, flag === 'on');
+        const name = targetUser.real_name || targetUser.name || mention.id;
+        const statusEmoji = flag === 'on' ? '🎓' : '📵';
+        await respond({ response_type: 'ephemeral', text: `${statusEmoji} *${name}* — días de examen: *${flag === 'on' ? 'activados' : 'desactivados'}*.` });
+        break;
+      }
       case 'actividad': case 'pings': {
         const s = t.weekStart(), e = t.today();
         await respond({ response_type: 'ephemeral', blocks: blocks.buildPingSummaryReport(db.getPingSummary(s, e), s, e) });
@@ -473,7 +499,7 @@ app.command('/ayuda', async ({ ack, respond }) => {
     blocks: [
       { type: 'header', text: { type: 'plain_text', text: '⚡ Hoopla Asistencia — Comandos' } },
       { type: 'section', text: { type: 'mrkdwn', text: '*🙋 Ausencias y licencias*' } },
-      { type: 'section', text: { type: 'mrkdwn', text: '`/pedir` — Solicitá vacaciones, día libre, examen, medio día, médico u otra ausencia. La solicitud queda pendiente hasta que un admin la apruebe o rechace.' } },
+      { type: 'section', text: { type: 'mrkdwn', text: '`/pedir` — Solicitá vacaciones, día libre, examen, medio día, médico u otra ausencia. La solicitud queda pendiente hasta que un admin la apruebe o rechace.\n`/mi-balance` — Consultá cuántos días de cada tipo te quedan en el año.' } },
       { type: 'divider' },
       { type: 'section', text: { type: 'mrkdwn', text: '*📋 Registro diario*' } },
       { type: 'section', text: { type: 'mrkdwn', text: '`/marcar` — Registrá tu entrada, almuerzo o salida del día. Te manda un link con PIN para confirmar desde la compu.' } },
@@ -489,7 +515,7 @@ app.command('/ayuda', async ({ ack, respond }) => {
       { type: 'section', text: { type: 'mrkdwn', text: '`/reporte semanal` — Resumen de horas de la semana.\n`/reporte mensual` — Resumen del mes.' } },
       { type: 'divider' },
       { type: 'section', text: { type: 'mrkdwn', text: '*👥 Gestión de usuarios (admin)*' } },
-      { type: 'section', text: { type: 'mrkdwn', text: '`/admin lista` — Ver todos los usuarios.\n`/admin agregar @usuario` — Sumá a alguien al seguimiento.\n`/admin sacar @usuario` — Quitá a alguien del seguimiento.\n`/admin ausencias` — Ver solicitudes de ausencia pendientes.\n`/admin feriados [año]` — Ver los feriados cargados.' } },
+      { type: 'section', text: { type: 'mrkdwn', text: '`/admin lista` — Ver todos los usuarios.\n`/admin agregar @usuario` — Sumá a alguien al seguimiento.\n`/admin sacar @usuario` — Quitá a alguien del seguimiento.\n`/admin ausencias` — Ver solicitudes de ausencia pendientes.\n`/admin feriados [año]` — Ver los feriados cargados.\n`/admin estudiante @usuario on|off` — Activar/desactivar días de examen (requiere carrera universitaria).' } },
       { type: 'divider' },
       { type: 'context', elements: [{ type: 'mrkdwn', text: '_Solo vos ves este mensaje_ · ⚡ Hoopla Asistencia' }] },
     ],

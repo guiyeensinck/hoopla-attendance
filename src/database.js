@@ -122,6 +122,7 @@ db.exec(`
 // Migrations
 try { db.exec('ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0'); } catch(e) {}
 try { db.exec('ALTER TABLE users ADD COLUMN is_tracked INTEGER DEFAULT 0'); } catch(e) {}
+try { db.exec('ALTER TABLE users ADD COLUMN is_student INTEGER DEFAULT 0'); } catch(e) {}
 try { db.exec('ALTER TABLE records ADD COLUMN work_mode TEXT DEFAULT \'office\''); } catch(e) {}
 try { db.exec('ALTER TABLE records ADD COLUMN last_seen TEXT'); } catch(e) {}
 try { db.exec('ALTER TABLE records ADD COLUMN auto_closed INTEGER DEFAULT 0'); } catch(e) {}
@@ -585,6 +586,299 @@ const addLeaveAdminNotification = (requestId, slackId, channelId, messageTs) =>
 const getLeaveAdminNotifications = (requestId) =>
   db.prepare(`SELECT * FROM leave_admin_notifications WHERE request_id = ?`).all(requestId);
 
+// ═══════════════════════════════════════════════════════════════════
+// LEAVE QUOTA & VALIDATION
+// ═══════════════════════════════════════════════════════════════════
+
+/** Returns all APPROVED leave_requests for a user in a calendar year */
+const getApprovedLeavesByYear = (slackId, year) =>
+  db.prepare(`SELECT * FROM leave_requests WHERE slack_id = ? AND status = 'approved'
+    AND (date_from LIKE ? OR date_to LIKE ?) ORDER BY date_from`)
+    .all(slackId, `${year}-%`, `${year}-%`);
+
+/** Count approved days for a specific type (or array of types) in a year */
+const countApprovedLeaveHalfDays = (slackId, year, types) => {
+  const typeList = Array.isArray(types) ? types : [types];
+  const rows = db.prepare(
+    `SELECT type, date_from, date_to FROM leave_requests
+     WHERE slack_id = ? AND status = 'approved'
+     AND substr(date_from,1,4) = ? AND type IN (${typeList.map(() => '?').join(',')})`)
+    .all(slackId, String(year), ...typeList);
+  // personal = 2 half-days, personal_am/pm = 1 half-day each
+  // medical_am/pm = 1 half-day each
+  // exam / vacation = count workdays in range
+  let total = 0;
+  for (const r of rows) {
+    if (r.type === 'personal') total += 2;
+    else if (r.type === 'personal_am' || r.type === 'personal_pm') total += 1;
+    else if (r.type === 'medical_am' || r.type === 'medical_pm') total += 1;
+    else if (r.type === 'exam') total += countWorkdaysInRange(r.date_from, r.date_to);
+    else if (r.type === 'vacation_summer' || r.type === 'vacation_winter') total += 1; // 1 block
+  }
+  return total;
+};
+
+/** Count approved personal half-days used in a 2-month window [from, to] */
+const countPersonalHalfDaysInWindow = (slackId, from, to) => {
+  const rows = db.prepare(
+    `SELECT type FROM leave_requests WHERE slack_id = ? AND status = 'approved'
+     AND date_from BETWEEN ? AND ? AND type IN ('personal','personal_am','personal_pm')`)
+    .all(slackId, from, to);
+  let total = 0;
+  for (const r of rows) total += r.type === 'personal' ? 2 : 1;
+  return total;
+};
+
+/** Count approved exam days in a specific year+semester */
+const countExamDaysInSemester = (slackId, year, semester) => {
+  const [from, to] = semester === 1
+    ? [`${year}-01-01`, `${year}-06-30`]
+    : [`${year}-07-01`, `${year}-12-31`];
+  const rows = db.prepare(
+    `SELECT date_from, date_to FROM leave_requests WHERE slack_id = ? AND status = 'approved'
+     AND type = 'exam' AND date_from BETWEEN ? AND ?`)
+    .all(slackId, from, to);
+  return rows.reduce((s, r) => s + countWorkdaysInRange(r.date_from, r.date_to), 0);
+};
+
+/** Count approved exam days in a specific year+month */
+const countExamDaysInMonth = (slackId, year, month) => {
+  const m = String(month).padStart(2, '0');
+  const rows = db.prepare(
+    `SELECT date_from, date_to FROM leave_requests WHERE slack_id = ? AND status = 'approved'
+     AND type = 'exam' AND substr(date_from,1,7) = ?`)
+    .all(slackId, `${year}-${m}`);
+  return rows.reduce((s, r) => s + countWorkdaysInRange(r.date_from, r.date_to), 0);
+};
+
+/** True if the ISO week containing `date` has a public holiday (= semana corta) */
+const isShortWeek = (date) => {
+  const d = dayjs(date);
+  const monday = d.startOf('isoWeek').format('YYYY-MM-DD');
+  const friday = d.startOf('isoWeek').add(4, 'day').format('YYYY-MM-DD');
+  const count = db.prepare(
+    `SELECT COUNT(*) as c FROM day_overrides WHERE slack_id IS NULL AND type='holiday' AND date BETWEEN ? AND ?`)
+    .get(monday, friday)?.c || 0;
+  return count > 0;
+};
+
+/** Count business days between two dates (inclusive), excluding holidays */
+const countBusinessDays = (from, to) => {
+  const holidays = new Set(
+    db.prepare(`SELECT date FROM day_overrides WHERE type='holiday' AND slack_id IS NULL AND date BETWEEN ? AND ?`)
+      .all(from, to).map(r => r.date)
+  );
+  let count = 0;
+  let d = dayjs(from);
+  const end = dayjs(to);
+  while (d.isBefore(end) || d.isSame(end, 'day')) {
+    if (d.day() !== 0 && d.day() !== 6 && !holidays.has(d.format('YYYY-MM-DD'))) count++;
+    d = d.add(1, 'day');
+  }
+  return count;
+};
+
+/** Check if same week as `date` already has an approved leave of given types (for mixing rule) */
+const hasApprovedLeaveInWeek = (slackId, date, types) => {
+  const monday = dayjs(date).startOf('isoWeek').format('YYYY-MM-DD');
+  const friday = dayjs(date).startOf('isoWeek').add(4, 'day').format('YYYY-MM-DD');
+  const typeList = Array.isArray(types) ? types : [types];
+  const count = db.prepare(
+    `SELECT COUNT(*) as c FROM leave_requests WHERE slack_id = ? AND status = 'approved'
+     AND date_from <= ? AND date_to >= ?
+     AND type IN (${typeList.map(() => '?').join(',')})`)
+    .get(slackId, friday, monday, ...typeList)?.c || 0;
+  return count > 0;
+};
+
+/** Count how many summer or winter vacation blocks were approved this year */
+const countVacationBlocksThisYear = (slackId, year, type) => {
+  return db.prepare(
+    `SELECT COUNT(*) as c FROM leave_requests WHERE slack_id = ? AND status = 'approved'
+     AND type = ? AND substr(date_from,1,4) = ?`)
+    .get(slackId, type, String(year))?.c || 0;
+};
+
+/**
+ * Comprehensive validation for a leave request.
+ * Returns { errors: string[] }. Empty array = valid.
+ */
+const validateLeaveRequest = (slackId, type, dateFrom, dateTo, _notes) => {
+  const errors = [];
+  const today = dayjs(t.today());
+  const from  = dayjs(dateFrom);
+  const to    = dayjs(dateTo);
+  const year  = from.year();
+
+  // ── Common: date order ────────────────────────────────────────────
+  if (to.isBefore(from)) {
+    errors.push('La fecha de fin no puede ser anterior a la de inicio.');
+    return { errors };
+  }
+
+  // ── Common: can't request past dates ─────────────────────────────
+  if (from.isBefore(today, 'day')) {
+    errors.push('No podés pedir días en el pasado.');
+    return { errors };
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  if (type === 'vacation_summer' || type === 'vacation_winter') {
+    const maxDays    = type === 'vacation_summer' ? 14 : 7;
+    const advDays    = 28; // 4 weeks
+    const blockLabel = type === 'vacation_summer' ? 'verano' : 'invierno';
+
+    // Must start on Monday
+    if (from.day() !== 1) {
+      errors.push(`Las vacaciones deben arrancar un *lunes*. ${from.format('dddd DD/MM')} no es lunes.`);
+    }
+
+    // Advance notice
+    const daysUntil = from.diff(today, 'day');
+    if (daysUntil < advDays) {
+      errors.push(`Las vacaciones requieren al menos 4 semanas de anticipación (${advDays} días). Faltan solo ${daysUntil} días.`);
+    }
+
+    // Season window
+    const month = from.month() + 1; // 1-indexed
+    if (type === 'vacation_summer') {
+      // Oct (10) to Mar (3) — dateTo must be before Apr 1
+      const validMonths = [10, 11, 12, 1, 2, 3];
+      if (!validMonths.includes(month)) {
+        errors.push('Las vacaciones de verano deben tomarse entre octubre y el 1 de abril.');
+      }
+      const apr1 = dayjs(`${to.month() >= 9 ? to.year() + 1 : to.year()}-04-01`);
+      if (to.isAfter(apr1)) {
+        errors.push('Las vacaciones de verano deben terminar antes del 1 de abril.');
+      }
+    } else {
+      // Winter: Jul–Sep
+      const validMonths = [7, 8, 9];
+      if (!validMonths.includes(month)) {
+        errors.push('Las vacaciones de invierno deben tomarse entre julio y septiembre.');
+      }
+      if (to.month() + 1 > 9) {
+        errors.push('Las vacaciones de invierno deben terminar antes del 30 de septiembre.');
+      }
+    }
+
+    // Max consecutive days (holidays don't add, they just don't subtract)
+    const calendarDays = to.diff(from, 'day') + 1;
+    if (calendarDays > maxDays) {
+      errors.push(`Máximo ${maxDays} días corridos para vacaciones de ${blockLabel}. Pediste ${calendarDays}.`);
+    }
+
+    // Only 1 block per year
+    const blocksUsed = countVacationBlocksThisYear(slackId, year, type);
+    if (blocksUsed >= 1) {
+      errors.push(`Ya usaste tu bloque de vacaciones de ${blockLabel} ${year}.`);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  else if (type === 'personal' || type === 'personal_am' || type === 'personal_pm') {
+    const ANNUAL_HD = 4; // 2 full days = 4 half-days
+    const PER2M_HD  = 2; // 1 full day = 2 half-days per 2 months
+
+    // Advance notice: 2 weeks
+    const daysUntil = from.diff(today, 'day');
+    if (daysUntil < 14) {
+      errors.push(`Los trámites personales requieren al menos 2 semanas de anticipación. Faltan ${daysUntil} días.`);
+    }
+
+    // Cannot be in short week or week before a short week
+    if (isShortWeek(dateFrom)) {
+      errors.push('No se pueden tomar trámites personales en una semana corta (semana con feriado).');
+    }
+    const prevWeekMonday = from.startOf('isoWeek').subtract(7, 'day').format('YYYY-MM-DD');
+    const nextWeek = from.startOf('isoWeek').add(7, 'day').format('YYYY-MM-DD');
+    if (isShortWeek(nextWeek)) {
+      errors.push('No se pueden tomar trámites personales en la semana previa a una semana corta.');
+    }
+
+    // Annual quota
+    const usedHD = countPersonalHalfDaysInWindow(slackId, `${year}-01-01`, `${year}-12-31`);
+    const requestHD = type === 'personal' ? 2 : 1;
+    if (usedHD + requestHD > ANNUAL_HD) {
+      const remainHD = ANNUAL_HD - usedHD;
+      const remainLabel = remainHD <= 0 ? 'ninguno' : remainHD === 1 ? '½ día' : `${remainHD / 2} día(s)`;
+      errors.push(`Superás el límite anual de trámites personales (2 días / 4 medios días). Te quedan: ${remainLabel}.`);
+    }
+
+    // Per-2-month quota: check the 2-month window containing `from`
+    const wMonth = from.month(); // 0-indexed
+    const windowStart = from.startOf('year').add(Math.floor(wMonth / 2) * 2, 'month');
+    const windowEnd   = windowStart.add(2, 'month').subtract(1, 'day');
+    const usedInWindow = countPersonalHalfDaysInWindow(slackId, windowStart.format('YYYY-MM-DD'), windowEnd.format('YYYY-MM-DD'));
+    if (usedInWindow + requestHD > PER2M_HD) {
+      errors.push(`Superás el límite de ${PER2M_HD / 2 === 1 ? '1 día completo' : `${PER2M_HD} medios días`} cada 2 meses. Ya usaste ${usedInWindow / 2} en este bimestre.`);
+    }
+
+    // No mixing with exam or medical in same week
+    if (hasApprovedLeaveInWeek(slackId, dateFrom, ['exam', 'medical_am', 'medical_pm'])) {
+      errors.push('No podés mezclar trámites personales con días de examen o turnos médicos en la misma semana.');
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  else if (type === 'medical_am' || type === 'medical_pm') {
+    const ANNUAL_HD = 4;
+    const usedHD = countApprovedLeaveHalfDays(slackId, year, ['medical_am', 'medical_pm']);
+    if (usedHD + 1 > ANNUAL_HD) {
+      errors.push(`Superás el límite de ${ANNUAL_HD} medios días médicos por año. Ya usaste ${usedHD}.`);
+    }
+    // No mixing in same week
+    if (hasApprovedLeaveInWeek(slackId, dateFrom, ['exam', 'personal', 'personal_am', 'personal_pm'])) {
+      errors.push('No podés mezclar turnos médicos con trámites personales o días de examen en la misma semana.');
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  else if (type === 'exam') {
+    // Must be student
+    const user = getUser(slackId);
+    if (!user?.is_student) {
+      errors.push('Los días de examen son solo para quienes cursan una carrera de grado reconocida por el Ministerio de Educación. Pedile al admin que active este permiso en tu perfil.');
+    }
+
+    // Advance notice: 10 business days
+    const bizDays = countBusinessDays(t.today(), from.subtract(1, 'day').format('YYYY-MM-DD'));
+    if (bizDays < 10) {
+      errors.push(`Los días de examen requieren al menos 10 días hábiles de anticipación. Faltan solo ${bizDays} días hábiles.`);
+    }
+
+    // Max 2 consecutive days
+    const calDays = to.diff(from, 'day') + 1;
+    if (calDays > 2) {
+      errors.push('Solo podés pedir hasta 2 días corridos por examen.');
+    }
+
+    // Semester quota (5 per semester)
+    const semester = from.month() < 6 ? 1 : 2;
+    const usedSem  = countExamDaysInSemester(slackId, year, semester);
+    const requestDays = countWorkdaysInRange(dateFrom, dateTo);
+    if (usedSem + requestDays > 5) {
+      errors.push(`Superás el límite de 5 días de examen por semestre. Ya usaste ${usedSem} en el ${semester}° semestre.`);
+    }
+
+    // Monthly quota (max 4)
+    const usedMonth = countExamDaysInMonth(slackId, year, from.month() + 1);
+    if (usedMonth + requestDays > 4) {
+      errors.push(`Superás el límite de 4 días de examen por mes. Ya usaste ${usedMonth} este mes.`);
+    }
+
+    // No mixing in same week with personal or medical
+    if (hasApprovedLeaveInWeek(slackId, dateFrom, ['personal', 'personal_am', 'personal_pm', 'medical_am', 'medical_pm'])) {
+      errors.push('No podés mezclar días de examen con trámites personales o turnos médicos en la misma semana.');
+    }
+  }
+
+  return { errors };
+};
+
+const setStudentFlag = (slackId, value) =>
+  db.prepare('UPDATE users SET is_student = ? WHERE slack_id = ?').run(value ? 1 : 0, slackId);
+
 module.exports = {
   db, upsertUser, getUser, getAllUsers, getTrackedUsers, getAdminUsers, setAdmin, setTracked, isAdmin,
   getOrCreateRecord, updateField, setWorkMode, setLocation, getRecord, updateLastSeen, autoCloseDay,
@@ -598,4 +892,8 @@ module.exports = {
   createLeaveRequest, getLeaveRequest, approveLeaveRequest, rejectLeaveRequest,
   getPendingLeaveRequests, getAllLeaveRequests, getUserLeaveRequests,
   addLeaveAdminNotification, getLeaveAdminNotifications,
+  validateLeaveRequest, setStudentFlag,
+  getApprovedLeavesByYear, countApprovedLeaveHalfDays, countPersonalHalfDaysInWindow,
+  countExamDaysInSemester, countExamDaysInMonth, isShortWeek, countBusinessDays,
+  hasApprovedLeaveInWeek, countVacationBlocksThisYear,
 };
