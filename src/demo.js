@@ -4,30 +4,36 @@ const texts = require('./texts');
 const { buildWeeklyReport } = require('./blocks');
 const { buildPingMessage, PING_TIMEOUT_MIN } = require('./activity');
 
-const DEMO_HELP = `
-🧪 *Modo demo — comandos disponibles:*
+const DEMO_HELP = [
+  '🧪 *Modo demo — comandos disponibles:*',
+  '',
+  '`/demo reset` — Borra el registro de hoy para volver a testear `/marcar`',
+  '`/demo recordatorio` — Te manda el DM de las 9:35 (con el ASCII art)',
+  '`/demo almuerzo` — Te manda el recordatorio de almuerzo (14:00)',
+  '`/demo salida` — Te manda el recordatorio de salida (18:30)',
+  '`/demo ping` — Te manda un ping de actividad ahora',
+  '`/demo cierre` — Ejecuta el cierre automático de tu jornada',
+  '`/demo reporte` — Te manda el reporte semanal por DM',
+  '`/demo estado` — Muestra tu estado del día y balance semanal',
+].join('\n');
 
-\`/demo reset\` — Borra el registro de hoy para volver a testear \`/marcar\`
-\`/demo recordatorio\` — Te manda el DM de las 9:35 (con el ASCII art)
-\`/demo almuerzo\` — Te manda el recordatorio de almuerzo (14:00)
-\`/demo salida\` — Te manda el recordatorio de salida (18:30)
-\`/demo ping\` — Te manda un ping de actividad ahora
-\`/demo cierre\` — Ejecuta el cierre automático de tu jornada
-\`/demo reporte\` — Te manda el reporte semanal
-\`/demo estado\` — Muestra tu estado del día
-`.trim();
+const safeRespond = async (respond, text) => {
+  try {
+    await respond({ response_type: 'ephemeral', text });
+  } catch (e) {
+    console.error('[demo] respond() failed:', e.message);
+  }
+};
 
 const setupDemo = (app) => {
   const SUPER_ADMIN = (process.env.ADMIN_USER_IDS || '').split(',').map(s => s.trim()).filter(Boolean)[0]
     || process.env.SOLO_USER_ID || '';
 
-  const isDemoUser = (userId) => userId === SUPER_ADMIN;
-
   app.command('/demo', async ({ command, ack, respond, client }) => {
     await ack();
 
-    if (!isDemoUser(command.user_id)) {
-      await respond({ response_type: 'ephemeral', text: '🔒 Solo el super admin puede usar `/demo`.' });
+    if (command.user_id !== SUPER_ADMIN) {
+      await safeRespond(respond, '🔒 Solo el super admin puede usar `/demo`.');
       return;
     }
 
@@ -37,16 +43,13 @@ const setupDemo = (app) => {
     const now = t.currentTime();
 
     try {
-      // Garantizar que el usuario exista en la DB (necesario para FK constraints)
-      const profile = await client.users.info({ user: userId });
-      db.upsertUser({
-        slack_id: userId,
-        name: profile.user.name,
-        real_name: profile.user.real_name || profile.user.name,
-      });
-      // ─── /demo (sin sub) o /demo ayuda ────────────────────────────
+      // Garantizar que el usuario exista en la DB (necesario para FK constraints).
+      // Usamos command.user_name para no necesitar el scope users:read.
+      db.upsertUser({ slack_id: userId, name: command.user_name, real_name: command.user_name });
+
+      // ─── /demo  o  /demo ayuda ─────────────────────────────────────
       if (!sub || sub === 'ayuda') {
-        await respond({ response_type: 'ephemeral', text: DEMO_HELP });
+        await safeRespond(respond, DEMO_HELP);
         return;
       }
 
@@ -55,28 +58,28 @@ const setupDemo = (app) => {
         db.db.prepare('DELETE FROM records WHERE slack_id = ? AND date = ?').run(userId, today);
         db.db.prepare('DELETE FROM activity_pings WHERE slack_id = ? AND date = ?').run(userId, today);
         db.db.prepare('DELETE FROM day_overrides WHERE slack_id = ? AND date = ?').run(userId, today);
-        await respond({ response_type: 'ephemeral', text: '🗑️ *Reset completo.* Registro de hoy borrado.\nPodés volver a testear `/marcar` desde cero.' });
+        await safeRespond(respond, '🗑️ *Reset completo.* Registro de hoy borrado.\nPodés volver a testear `/marcar` desde cero.');
         return;
       }
 
       // ─── /demo recordatorio ────────────────────────────────────────
       if (sub === 'recordatorio') {
         await client.chat.postMessage({ channel: userId, text: texts.reminders.entryMissing() });
-        await respond({ response_type: 'ephemeral', text: '✅ DM de recordatorio enviado. Fijate en tus mensajes directos.' });
+        await safeRespond(respond, '✅ DM de recordatorio enviado. Fijate en tus mensajes directos.');
         return;
       }
 
       // ─── /demo almuerzo ────────────────────────────────────────────
       if (sub === 'almuerzo') {
         await client.chat.postMessage({ channel: userId, text: texts.reminders.lunchMissing });
-        await respond({ response_type: 'ephemeral', text: '✅ DM de almuerzo enviado.' });
+        await safeRespond(respond, '✅ DM de almuerzo enviado.');
         return;
       }
 
       // ─── /demo salida ──────────────────────────────────────────────
       if (sub === 'salida') {
         await client.chat.postMessage({ channel: userId, text: texts.reminders.exitMissing });
-        await respond({ response_type: 'ephemeral', text: '✅ DM de salida enviado.' });
+        await safeRespond(respond, '✅ DM de salida enviado.');
         return;
       }
 
@@ -85,7 +88,7 @@ const setupDemo = (app) => {
         const pingId = db.createPing(userId, today, now);
         const pingBlocks = buildPingMessage(pingId);
         await client.chat.postMessage({ channel: userId, text: '🏓 Check de actividad — ¿seguís ahí?', blocks: pingBlocks });
-        await respond({ response_type: 'ephemeral', text: `✅ Ping enviado. Tenés ${PING_TIMEOUT_MIN} minutos para responder.` });
+        await safeRespond(respond, `✅ Ping enviado. Tenés ${PING_TIMEOUT_MIN} minutos para responder.`);
         return;
       }
 
@@ -93,13 +96,13 @@ const setupDemo = (app) => {
       if (sub === 'cierre') {
         const record = db.getRecord(userId, today);
         if (!record?.entry_time) {
-          await respond({ response_type: 'ephemeral', text: '⚠️ No tenés entrada registrada hoy. Hacé `/marcar` primero.' });
+          await safeRespond(respond, '⚠️ No tenés entrada registrada hoy. Hacé `/marcar` primero.');
           return;
         }
         db.fillMissingLunch(userId, today, record);
         db.updateField(userId, today, 'exit_time', now);
         await client.chat.postMessage({ channel: userId, text: texts.reminders.exitAutoClosedUser(now) });
-        await respond({ response_type: 'ephemeral', text: `✅ Cierre automático simulado. Salida registrada a las *${now}*.` });
+        await safeRespond(respond, `✅ Cierre automático simulado. Salida registrada a las *${now}*.`);
         return;
       }
 
@@ -108,7 +111,7 @@ const setupDemo = (app) => {
         const s = t.weekStart(), e = t.today();
         const reportBlocks = buildWeeklyReport(db.getWeeklySummary(s, e), s, e);
         await client.chat.postMessage({ channel: userId, text: '📊 Reporte semanal (demo)', blocks: reportBlocks });
-        await respond({ response_type: 'ephemeral', text: '✅ Reporte enviado por DM.' });
+        await safeRespond(respond, '✅ Reporte enviado por DM.');
         return;
       }
 
@@ -122,19 +125,18 @@ const setupDemo = (app) => {
         const daysElapsed = db.countWorkdaysInRange(weekStart, today);
         const expected = Math.round(daysElapsed * EXPECTED * 10) / 10;
         const diff = Math.round((totalWorked - expected) * 10) / 10;
-        const fields = ['entry_time', 'lunch_start', 'lunch_end', 'exit_time'];
         const labels = { entry_time: '🟢 Entrada', lunch_start: '🍽️ Inicio almuerzo', lunch_end: '⏱️ Fin almuerzo', exit_time: '🔴 Salida' };
-        const statusLines = fields.map(f => `${labels[f]}: ${record?.[f] || '_pendiente_'}`).join('\n');
+        const statusLines = Object.entries(labels).map(([f, l]) => `${l}: ${record?.[f] || '_pendiente_'}`).join('\n');
         const balanceIcon = diff >= 0 ? '🟢' : (Math.abs(diff) > 2 ? '🔴' : '🟡');
-        await respond({ response_type: 'ephemeral', text: `📊 *Tu estado hoy — ${today}*\n${statusLines}\n\n📅 *Balance semanal:*\nTrabajadas: *${totalWorked}hs* / Esperadas: *${expected}hs*\n${balanceIcon} Diferencia: *${diff > 0 ? '+' : ''}${diff}hs*` });
+        await safeRespond(respond, `📊 *Tu estado hoy — ${today}*\n${statusLines}\n\n📅 *Balance semanal:*\nTrabajadas: *${totalWorked}hs* / Esperadas: *${expected}hs*\n${balanceIcon} Diferencia: *${diff > 0 ? '+' : ''}${diff}hs*`);
         return;
       }
 
-      await respond({ response_type: 'ephemeral', text: `❓ Sub-comando desconocido: \`${sub}\`\n\nUsá \`/demo\` para ver las opciones.` });
+      await safeRespond(respond, `❓ Sub-comando desconocido: \`${sub}\`\n\nUsá \`/demo\` para ver las opciones.`);
 
     } catch (err) {
-      console.error('[demo] Error:', err);
-      await respond({ response_type: 'ephemeral', text: `❌ Error: ${err.message}` });
+      console.error('[demo] Error en sub-comando:', sub, err.message);
+      await safeRespond(respond, `❌ Error en \`/demo ${sub}\`: ${err.message}`);
     }
   });
 
