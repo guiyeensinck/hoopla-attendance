@@ -84,6 +84,66 @@ const setupDashboard = (boltApp) => {
     res.json({ summary: db.getWeeklySummary(startDate, endDate), startDate, endDate });
   });
 
+  // ─── Personas overview ───────────────────────────────────────────
+  router.get('/personas', (req, res) => {
+    const EXPECTED = parseFloat(process.env.EXPECTED_HOURS_PER_DAY || '8');
+    const weekStart = t.weekStart();
+    const monthStart = t.monthStart();
+    const today = t.today();
+    const tracked = db.getTrackedUsers();
+
+    const userStats = tracked.map(u => {
+      const weekRec   = db.getUserWeeklyRecords(u.slack_id, weekStart, today);
+      const monthRec  = db.getUserRecordsByDateRange(u.slack_id, monthStart, today);
+      const weekHours = Math.round(weekRec.reduce((s, r) => s + (r.total_hours || 0), 0) * 10) / 10;
+      const monthHours= Math.round(monthRec.reduce((s, r) => s + (r.total_hours || 0), 0) * 10) / 10;
+      const weekExp   = Math.round(db.countWorkdaysInRange(weekStart, today) * EXPECTED * 10) / 10;
+      const monthExp  = Math.round(db.countWorkdaysInRange(monthStart, today) * EXPECTED * 10) / 10;
+      const presentDays = monthRec.filter(r => r.entry_time).length;
+      const missedDays  = db.countMissedDays(u.slack_id, monthStart, today);
+      const officeDays  = monthRec.filter(r => r.location === 'agencia' || r.location === 'office').length;
+      const homeDays    = monthRec.filter(r => r.location === 'home_office' || r.location === 'remote').length;
+      const leaves      = db.getUserLeaveRequests(u.slack_id, 50);
+      const pendingLeaves = leaves.filter(l => l.status === 'pending').length;
+      const monthWorkdays = db.countWorkdaysInRange(monthStart, today);
+      const attendance  = monthWorkdays > 0 ? Math.round((presentDays / monthWorkdays) * 100) : 0;
+      const entryTimes  = monthRec.filter(r => r.entry_time).map(r => { const [h, m] = r.entry_time.split(':').map(Number); return h * 60 + m; });
+      const avgEntryMin = entryTimes.length ? entryTimes.reduce((s, x) => s + x, 0) / entryTimes.length : null;
+      const avgEntry    = avgEntryMin !== null ? `${String(Math.floor(avgEntryMin/60)).padStart(2,'0')}:${String(Math.round(avgEntryMin%60)).padStart(2,'0')}` : '—';
+      return { ...u, weekHours, weekExp, monthHours, monthExp, presentDays, missedDays, officeDays, homeDays, pendingLeaves, attendance, avgEntry };
+    });
+    res.send(renderPersonas({ userStats, weekStart, monthStart, today }));
+  });
+
+  // ─── Persona detail ──────────────────────────────────────────────
+  router.get('/personas/:slackId', (req, res) => {
+    const { slackId } = req.params;
+    const user = db.getUser(slackId);
+    if (!user) { res.status(404).send('Usuario no encontrado'); return; }
+    const EXPECTED = parseFloat(process.env.EXPECTED_HOURS_PER_DAY || '8');
+    const weekStart  = t.weekStart();
+    const monthStart = t.monthStart();
+    const today      = t.today();
+
+    const weekRec    = db.getUserWeeklyRecords(slackId, weekStart, today);
+    const monthRec   = db.getUserRecordsByDateRange(slackId, monthStart, today);
+    const leaves     = db.getUserLeaveRequests(slackId, 30);
+    const missedDays = db.countMissedDays(slackId, monthStart, today);
+    const officeDays = monthRec.filter(r => r.location === 'agencia' || r.location === 'office').length;
+    const homeDays   = monthRec.filter(r => r.location === 'home_office' || r.location === 'remote').length;
+    const weekHours  = Math.round(weekRec.reduce((s, r) => s + (r.total_hours || 0), 0) * 10) / 10;
+    const monthHours = Math.round(monthRec.reduce((s, r) => s + (r.total_hours || 0), 0) * 10) / 10;
+    const weekExp    = Math.round(db.countWorkdaysInRange(weekStart, today) * EXPECTED * 10) / 10;
+    const monthExp   = Math.round(db.countWorkdaysInRange(monthStart, today) * EXPECTED * 10) / 10;
+    const entryTimes = monthRec.filter(r => r.entry_time).map(r => { const [h, m] = r.entry_time.split(':').map(Number); return h * 60 + m; });
+    const avgEntryMin= entryTimes.length ? entryTimes.reduce((s, x) => s + x, 0) / entryTimes.length : null;
+    const avgEntry   = avgEntryMin !== null ? `${String(Math.floor(avgEntryMin/60)).padStart(2,'0')}:${String(Math.round(avgEntryMin%60)).padStart(2,'0')}` : '—';
+    const monthWorkdays = db.countWorkdaysInRange(monthStart, today);
+    const attendance = monthWorkdays > 0 ? Math.round((monthRec.filter(r=>r.entry_time).length / monthWorkdays) * 100) : 0;
+
+    res.send(renderPersonaDetail({ user, weekRec, monthRec, leaves, weekHours, weekExp, monthHours, monthExp, missedDays, officeDays, homeDays, avgEntry, attendance, today, weekStart, monthStart, EXPECTED }));
+  });
+
   // ─── Ausencias ───────────────────────────────────────────────────
   router.get('/ausencias', (req, res) => {
     const from = req.query.from || dayjs().subtract(30, 'day').format('YYYY-MM-DD');
@@ -285,6 +345,7 @@ const layout = (title, nav, body) => `
       <a href="/dashboard/activity" class="${nav === 'activity' ? 'active' : ''}">Actividad</a>
       <a href="/dashboard/users" class="${nav === 'users' ? 'active' : ''}">Usuarios</a>
       <a href="/dashboard/ausencias" class="${nav === 'ausencias' ? 'active' : ''}">Ausencias</a>
+      <a href="/dashboard/personas" class="${nav === 'personas' ? 'active' : ''}">Personas</a>
     </nav>
   </header>
   ${body}
@@ -623,6 +684,163 @@ const renderVerifySuccess = ({ user, record, action_type, time, alreadyComplete 
     </div>
     <div class="verify-card" style="margin-top:1rem">${statusRows}</div>
     ${weeklyHtml}`);
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// PERSONAS PAGE
+// ═══════════════════════════════════════════════════════════════════
+
+const hBar = (val, total, color) => {
+  const pct = total > 0 ? Math.min(100, Math.round((val / total) * 100)) : 0;
+  return `<div class="progress" style="width:60px;display:inline-block;vertical-align:middle;margin-left:4px"><div class="progress-bar ${color}" style="width:${pct}%"></div></div>`;
+};
+
+const diffBadge = (diff) => {
+  const sign = diff >= 0 ? '+' : '';
+  const col = diff >= 0 ? 'var(--green)' : Math.abs(diff) > 4 ? 'var(--red)' : 'var(--yellow)';
+  return `<span style="color:${col};font-size:0.75rem;font-weight:600">${sign}${diff}hs</span>`;
+};
+
+const renderPersonas = ({ userStats, weekStart, monthStart, today }) => {
+  const totalWeekHours  = Math.round(userStats.reduce((s, u) => s + u.weekHours, 0) * 10) / 10;
+  const totalMonthHours = Math.round(userStats.reduce((s, u) => s + u.monthHours, 0) * 10) / 10;
+  const pendingTotal    = userStats.reduce((s, u) => s + u.pendingLeaves, 0);
+
+  const rows = userStats.map(u => {
+    const weekDiff  = Math.round((u.weekHours  - u.weekExp)  * 10) / 10;
+    const monthDiff = Math.round((u.monthHours - u.monthExp) * 10) / 10;
+    const attColor  = u.attendance >= 90 ? 'green' : u.attendance >= 70 ? 'yellow' : 'red';
+    return `<tr>
+      <td><a href="/dashboard/personas/${u.slack_id}" style="color:var(--accent-light);text-decoration:none;font-weight:500">${u.real_name || u.name}</a></td>
+      <td>${u.weekHours}hs ${hBar(u.weekHours, u.weekExp, weekDiff >= 0 ? 'green' : 'red')} ${diffBadge(weekDiff)}</td>
+      <td>${u.monthHours}hs ${hBar(u.monthHours, u.monthExp, monthDiff >= 0 ? 'green' : 'red')} ${diffBadge(monthDiff)}</td>
+      <td style="font-size:0.85rem">${u.presentDays}d presentes</td>
+      <td>${u.missedDays > 0 ? `<span style="color:var(--red);font-weight:600">${u.missedDays}d</span>` : '<span style="color:var(--green)">✓</span>'}</td>
+      <td style="font-size:0.8rem">🏢 ${u.officeDays} · 🏠 ${u.homeDays}</td>
+      <td style="font-size:0.8rem">${u.avgEntry}</td>
+      <td><span class="badge ${attColor === 'green' ? 'complete' : attColor === 'yellow' ? 'partial' : 'missing'}">${u.attendance}%</span></td>
+      <td>${u.pendingLeaves > 0 ? `<span class="badge pending">⏳ ${u.pendingLeaves}</span>` : '—'}</td>
+      <td><a href="/dashboard/personas/${u.slack_id}" style="color:var(--accent-light);font-size:0.8rem">Ver →</a></td>
+    </tr>`;
+  }).join('');
+
+  return layout('Personas', 'personas', `
+    <div class="grid">
+      <div class="card"><h3>Trackeados</h3><div class="value">${userStats.length}</div></div>
+      <div class="card"><h3>Horas equipo esta semana</h3><div class="value">${totalWeekHours}</div></div>
+      <div class="card"><h3>Horas equipo este mes</h3><div class="value">${totalMonthHours}</div></div>
+      <div class="card"><h3>Solicitudes pendientes</h3><div class="value ${pendingTotal > 0 ? 'yellow' : 'green'}">${pendingTotal}</div></div>
+    </div>
+    <div class="card">
+      <h3>👥 Resumen por persona — ${dayjs(monthStart).format('MMMM YYYY')}</h3>
+      <p style="font-size:0.75rem;color:var(--text-muted);margin-bottom:1rem">Semana: ${dayjs(weekStart).format('DD/MM')} – ${dayjs(today).format('DD/MM')} &nbsp;·&nbsp; Mes: ${dayjs(monthStart).format('DD/MM')} – ${dayjs(today).format('DD/MM')}</p>
+      ${userStats.length > 0 ? `<table><thead><tr>
+        <th>Persona</th><th>Esta semana</th><th>Este mes</th><th>Presencias</th><th>Faltas</th><th>Lugar</th><th>Entrada prom.</th><th>Asistencia</th><th>Ausencias</th><th></th>
+      </tr></thead><tbody>${rows}</tbody></table>`
+      : '<p class="empty">No hay usuarios trackeados.</p>'}
+    </div>`);
+};
+
+// ─── Persona detail page ─────────────────────────────────────────────
+
+const renderPersonaDetail = ({ user, weekRec, monthRec, leaves, weekHours, weekExp, monthHours, monthExp, missedDays, officeDays, homeDays, avgEntry, attendance, today, weekStart, monthStart, EXPECTED }) => {
+  const name = user.real_name || user.name;
+  const weekDiff  = Math.round((weekHours  - weekExp)  * 10) / 10;
+  const monthDiff = Math.round((monthHours - monthExp) * 10) / 10;
+  const DAY_NAMES = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+
+  // ── Week table ──────────────────────────────────────────────────
+  const weekRows = weekRec.map(r => {
+    const hrs  = r.total_hours || 0;
+    const col  = hrs >= EXPECTED ? 'var(--green)' : hrs >= EXPECTED - 1 ? 'var(--yellow)' : hrs > 0 ? 'var(--red)' : 'var(--text-muted)';
+    const icon = hrs >= EXPECTED ? '🟢' : hrs >= EXPECTED - 1 ? '🟡' : hrs > 0 ? '🔴' : '⚪';
+    return `<tr>
+      <td>${icon} <strong>${DAY_NAMES[dayjs(r.date).day()]}</strong> <span style="color:var(--text-muted);font-size:0.8rem">${dayjs(r.date).format('DD/MM')}</span></td>
+      <td>${r.entry_time || '—'}</td><td>${r.lunch_start ? r.lunch_start + ' – ' + (r.lunch_end || '?') : '—'}</td>
+      <td>${r.exit_time || '—'}</td>
+      <td style="color:${col};font-weight:600">${hrs > 0 ? hrs + 'hs' : '—'}</td>
+      <td>${locationBadge(r.location)}</td>
+      <td style="font-size:0.75rem;color:var(--text-muted)">${r.auto_closed ? '(auto)' : ''}</td>
+    </tr>`;
+  }).join('');
+
+  // ── Month table ──────────────────────────────────────────────────
+  const monthRows = [...monthRec].reverse().map(r => {
+    const hrs = r.total_hours || 0;
+    const col = hrs >= EXPECTED ? 'var(--green)' : hrs >= EXPECTED - 1 ? 'var(--yellow)' : hrs > 0 ? 'var(--red)' : 'var(--text-muted)';
+    const st  = r.exit_time ? 'complete' : r.entry_time ? 'partial' : 'missing';
+    const lb  = r.exit_time ? 'Completo' : r.entry_time ? 'Parcial' : 'Sin datos';
+    return `<tr>
+      <td>${DAY_NAMES[dayjs(r.date).day()]} ${dayjs(r.date).format('DD/MM')}</td>
+      <td>${r.entry_time || '—'}</td><td>${r.lunch_start || '—'}</td><td>${r.lunch_end || '—'}</td><td>${r.exit_time || '—'}</td>
+      <td style="color:${col};font-weight:600">${hrs > 0 ? hrs + 'hs' : '—'}</td>
+      <td>${locationBadge(r.location)}</td>
+      <td><span class="badge ${st}">${lb}</span></td>
+    </tr>`;
+  }).join('');
+
+  // ── Leave requests ───────────────────────────────────────────────
+  const leaveLabels = { pending: '⏳ Pendiente', approved: '✅ Aprobada', rejected: '❌ Rechazada' };
+  const leaveRows = leaves.map(l => {
+    const ti = LEAVE_TYPES[l.type] || { emoji: '📋', label: l.type };
+    const period = l.date_from === l.date_to ? dayjs(l.date_from).format('DD/MM/YYYY') : `${dayjs(l.date_from).format('DD/MM')} → ${dayjs(l.date_to).format('DD/MM')}`;
+    return `<tr>
+      <td>${ti.emoji} ${ti.label}</td><td>${period}</td>
+      <td style="font-size:0.8rem;color:var(--text-muted)">${l.notes || '—'}</td>
+      <td><span class="badge ${l.status}">${leaveLabels[l.status] || l.status}</span></td>
+      <td style="font-size:0.75rem;color:var(--text-muted)">${dayjs(l.created_at).format('DD/MM/YY')}</td>
+      ${l.reject_reason ? `<td style="font-size:0.75rem;color:var(--red)">${l.reject_reason}</td>` : '<td>—</td>'}
+    </tr>`;
+  }).join('');
+
+  const attColor = attendance >= 90 ? 'var(--green)' : attendance >= 70 ? 'var(--yellow)' : 'var(--red)';
+
+  return layout(`Personas — ${name}`, 'personas', `
+    <div style="margin-bottom:1.5rem">
+      <a href="/dashboard/personas" style="color:var(--text-muted);text-decoration:none;font-size:0.85rem">← Todas las personas</a>
+    </div>
+    <div style="margin-bottom:1.5rem">
+      <h2 style="font-size:1.4rem;color:var(--accent-light)">${name}</h2>
+      <p style="color:var(--text-muted);font-size:0.8rem">${user.slack_id} · ${dayjs(monthStart).format('MMMM YYYY')}</p>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Esta semana</h3>
+        <div class="value ${weekDiff >= 0 ? 'green' : Math.abs(weekDiff) > 4 ? 'red' : 'yellow'}">${weekHours}hs</div>
+        <div style="font-size:0.8rem;color:var(--text-muted);margin-top:0.25rem">de ${weekExp}hs esperadas (${weekDiff >= 0 ? '+' : ''}${weekDiff}hs)</div>
+      </div>
+      <div class="card">
+        <h3>Este mes</h3>
+        <div class="value ${monthDiff >= 0 ? 'green' : Math.abs(monthDiff) > 8 ? 'red' : 'yellow'}">${monthHours}hs</div>
+        <div style="font-size:0.8rem;color:var(--text-muted);margin-top:0.25rem">de ${monthExp}hs esperadas (${monthDiff >= 0 ? '+' : ''}${monthDiff}hs)</div>
+      </div>
+      <div class="card"><h3>Asistencia</h3><div class="value" style="color:${attColor}">${attendance}%</div></div>
+      <div class="card"><h3>Faltas sin justificar</h3><div class="value ${missedDays > 0 ? 'red' : 'green'}">${missedDays}</div></div>
+      <div class="card"><h3>Hora de entrada prom.</h3><div class="value" style="font-size:1.5rem">${avgEntry}</div></div>
+      <div class="card"><h3>Lugar este mes</h3>
+        <div style="font-size:1rem;margin-top:0.25rem">🏢 ${officeDays}d agencia</div>
+        <div style="font-size:1rem">🏠 ${homeDays}d home office</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:1.5rem">
+      <h3>📅 Esta semana — ${dayjs(weekStart).format('DD/MM')} al ${dayjs(today).format('DD/MM')}</h3>
+      ${weekRec.length > 0 ? `<table><thead><tr><th>Día</th><th>Entrada</th><th>Almuerzo</th><th>Salida</th><th>Horas</th><th>Lugar</th><th></th></tr></thead><tbody>${weekRows}</tbody></table>`
+      : '<p class="empty">Sin registros esta semana.</p>'}
+    </div>
+
+    <div class="card" style="margin-bottom:1.5rem">
+      <h3>📊 Este mes — ${dayjs(monthStart).format('DD/MM')} al ${dayjs(today).format('DD/MM')}</h3>
+      ${monthRec.length > 0 ? `<table><thead><tr><th>Día</th><th>Entrada</th><th>Almuerzo ini</th><th>Almuerzo fin</th><th>Salida</th><th>Horas</th><th>Lugar</th><th>Estado</th></tr></thead><tbody>${monthRows}</tbody></table>`
+      : '<p class="empty">Sin registros este mes.</p>'}
+    </div>
+
+    <div class="card">
+      <h3>🏖️ Solicitudes de ausencia</h3>
+      ${leaves.length > 0 ? `<table><thead><tr><th>Tipo</th><th>Período</th><th>Nota</th><th>Estado</th><th>Fecha solicitud</th><th>Motivo rechazo</th></tr></thead><tbody>${leaveRows}</tbody></table>`
+      : '<p class="empty">Sin solicitudes.</p>'}
+    </div>`);
 };
 
 // ═══════════════════════════════════════════════════════════════════

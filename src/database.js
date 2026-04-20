@@ -510,6 +510,29 @@ const countWorkdaysInRange = (startDate, endDate) => {
   return count;
 };
 
+// Days a user should have worked but has no entry_time (excludes weekends, holidays, leaves)
+const countMissedDays = (slackId, from, to) => {
+  const cap = t.today(); // don't count future days
+  const effectiveTo = to > cap ? cap : to;
+  const presentSet = new Set(
+    db.prepare('SELECT date FROM records WHERE slack_id = ? AND date BETWEEN ? AND ? AND entry_time IS NOT NULL')
+      .all(slackId, from, effectiveTo).map(r => r.date)
+  );
+  const leaveSet = new Set(
+    db.prepare(`SELECT date FROM day_overrides WHERE (slack_id = ? OR slack_id IS NULL) AND date BETWEEN ? AND ? AND type IN ('vacation','medical','day_off','absent','field','holiday','early_exit')`)
+      .all(slackId, from, effectiveTo).map(r => r.date)
+  );
+  let missed = 0;
+  let d = dayjs(from);
+  const end = dayjs(effectiveTo);
+  while (d.isBefore(end) || d.isSame(end, 'day')) {
+    const ds = d.format('YYYY-MM-DD');
+    if (d.day() !== 0 && d.day() !== 6 && !leaveSet.has(ds) && !presentSet.has(ds)) missed++;
+    d = d.add(1, 'day');
+  }
+  return missed;
+};
+
 const getHolidays = (year) =>
   db.prepare(
     "SELECT date, reason FROM day_overrides WHERE slack_id IS NULL AND type = 'holiday' AND date LIKE ? ORDER BY date"
@@ -571,7 +594,7 @@ module.exports = {
   createPing, respondToPing, expirePings, getPendingPings, getTodayPingCount, getPingSummary, getPingsByDateRange,
   logPresence, getPresenceByDate, getPresenceSummary,
   startMeeting, endMeeting, getActiveMeeting, getUserMeetings, getInMeetingUsers,
-  getUserWeeklyRecords, countWorkdaysInRange, fillMissingLunch, getHolidays,
+  getUserWeeklyRecords, countWorkdaysInRange, fillMissingLunch, getHolidays, countMissedDays,
   createLeaveRequest, getLeaveRequest, approveLeaveRequest, rejectLeaveRequest,
   getPendingLeaveRequests, getAllLeaveRequests, getUserLeaveRequests,
   addLeaveAdminNotification, getLeaveAdminNotifications,

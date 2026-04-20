@@ -12,13 +12,37 @@ const WORK_START_HOUR = parseInt(process.env.WORK_START_HOUR || '9', 10);
 const WORK_END_HOUR = parseInt(process.env.WORK_END_HOUR || '18', 10);
 const TZ = t.TZ;
 
+// ─── Reusable entry reminder check ──────────────────────────────────
+// Called both from cron and immediately on startup
+const runEntryReminderCheck = async (app) => {
+  const now = t.now();
+  const hour = now.hour();
+  if (now.day() === 0 || now.day() === 6) return 0;
+  if (hour < WORK_START_HOUR + 1 || hour >= WORK_END_HOUR) return 0;
+  const today = t.today();
+  if (db.isHoliday(today)) return 0;
+
+  const missing = db.getMissingToday(today);
+  let count = 0;
+  for (const user of missing) {
+    if (db.isUserExemptToday(user.slack_id, today)) continue;
+    await app.client.chat.postMessage({
+      channel: user.slack_id,
+      text: texts.reminders.entryMissingFollowUp(now.format('HH:mm')),
+    });
+    count++;
+  }
+  if (count > 0) console.log(`[scheduler] Recordatorio entrada ${now.format('HH:mm')} → ${count} personas`);
+  return count;
+};
+
 const setupScheduler = (app) => {
   const REPORT_CHANNEL = process.env.REPORT_CHANNEL || '#asistencia';
   const SOLO_MODE = process.env.SOLO_MODE === 'true';
   const SOLO_USER_ID = process.env.SOLO_USER_ID || '';
   const target = () => SOLO_MODE ? SOLO_USER_ID : REPORT_CHANNEL;
 
-  // ─── 9:35 — Auto-reminder for missing entry ─────────────────────
+  // ─── 9:35 — Initial reminder for missing entry ──────────────────
   cron.schedule('35 9 * * 1-5', async () => {
     try {
       const today = t.today();
@@ -26,44 +50,24 @@ const setupScheduler = (app) => {
       const missing = db.getMissingToday(today);
       for (const user of missing) {
         if (db.isUserExemptToday(user.slack_id, today)) continue;
-        await app.client.chat.postMessage({
-          channel: user.slack_id,
-          text: texts.reminders.entryMissing(),
-        });
+        await app.client.chat.postMessage({ channel: user.slack_id, text: texts.reminders.entryMissing() });
       }
       if (missing.length > 0) console.log(`[scheduler] 9:35 entry reminder → ${missing.length} personas`);
     } catch (err) { console.error('[scheduler] Error 9:35 reminder:', err); }
   }, { timezone: TZ });
 
-  // ─── Every 30 min — Repeat entry reminder until checked in ────────
-  // Fires every 30 min during work hours (after the 9:35 reminder, until end of day)
+  // ─── Every 30 min — Repeat reminder until checked in ─────────────
   cron.schedule('0,30 * * * 1-5', async () => {
-    try {
-      const now = t.now();
-      const hour = now.hour();
-      const minute = now.minute();
-
-      // Only fire after the 9:35 reminder window and before end of work day
-      // Skip 9:00 and 9:30 (before the 9:35 reminder) and anything at/after WORK_END_HOUR
-      if (hour < WORK_START_HOUR + 1) return;
-      if (hour >= WORK_END_HOUR) return;
-
-      const today = t.today();
-      if (db.isHoliday(today)) return;
-
-      const missing = db.getMissingToday(today);
-      let count = 0;
-      for (const user of missing) {
-        if (db.isUserExemptToday(user.slack_id, today)) continue;
-        await app.client.chat.postMessage({
-          channel: user.slack_id,
-          text: texts.reminders.entryMissingFollowUp(now.format('HH:mm')),
-        });
-        count++;
-      }
-      if (count > 0) console.log(`[scheduler] Recordatorio entrada ${now.format('HH:mm')} → ${count} personas`);
-    } catch (err) { console.error('[scheduler] Error recordatorio recurrente:', err); }
+    try { await runEntryReminderCheck(app); }
+    catch (err) { console.error('[scheduler] Error recordatorio recurrente:', err); }
   }, { timezone: TZ });
+
+  // ─── Immediate check on startup ──────────────────────────────────
+  // Fires 15s after boot so if it's already past 10am someone gets reminded right away
+  setTimeout(async () => {
+    try { await runEntryReminderCheck(app); }
+    catch(e) { console.error('[scheduler] Startup reminder error:', e.message); }
+  }, 15000);
 
   // ─── 10:30 — Alert to admin: who's still missing ────────────────
   cron.schedule('30 10 * * 1-5', async () => {
