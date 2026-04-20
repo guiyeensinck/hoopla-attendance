@@ -7,7 +7,7 @@ const txt = require('./texts');
 const { setupScheduler } = require('./scheduler');
 const { setupDashboard } = require('./dashboard');
 const { setupDemo } = require('./demo');
-const { setupLeaves, LEAVE_TYPES, buildQuotaSummary } = require('./leaves');
+const { setupLeaves, LEAVE_TYPES, buildQuotaSummary, buildRequestModal } = require('./leaves');
 const { createToken } = require('./verification');
 
 const EXPECTED_HOURS = parseFloat(process.env.EXPECTED_HOURS_PER_DAY || '8');
@@ -581,23 +581,23 @@ app.action('quick_entry', async ({ body, ack, client }) => {
     const next = blocks.getNextAction(record);
     if (!next) {
       await client.chat.postMessage({ channel: userId, text: txt.asistencia.fieldAlreadyComplete });
-      return;
+    } else {
+      const time = t.currentTime();
+      db.updateField(userId, today, next, time);
+      await client.chat.postMessage({ channel: userId, text: txt.asistencia.fieldRegistered(txt.status[next].emoji, txt.status[next].label, time) });
     }
-    const time = t.currentTime();
-    db.updateField(userId, today, next, time);
-    await client.chat.postMessage({ channel: userId, text: txt.asistencia.fieldRegistered(txt.status[next].emoji, txt.status[next].label, time) });
-    return;
+  } else {
+    await sendVerifyLink(client, userId);
   }
-
-  await sendVerifyLink(client, userId);
+  await publishHome(client, userId);
 });
 
 app.action('quick_lunch', async ({ body, ack, client }) => {
   await ack();
   const userId = body.user.id;
-  const today = t.today();
   db.upsertUser({ slack_id: userId, name: body.user.name, real_name: body.user.name });
   await sendVerifyLink(client, userId);
+  await publishHome(client, userId);
 });
 
 app.action('quick_skip_lunch', async ({ body, ack, client }) => {
@@ -607,14 +607,13 @@ app.action('quick_skip_lunch', async ({ body, ack, client }) => {
   const record = db.getRecord(userId, today);
   if (!record?.entry_time) {
     await client.chat.postMessage({ channel: userId, text: '⚠️ No tenés entrada registrada hoy.' });
-    return;
-  }
-  if (record.lunch_start) {
+  } else if (record.lunch_start) {
     await client.chat.postMessage({ channel: userId, text: '✅ El almuerzo ya está registrado.' });
-    return;
+  } else {
+    db.fillMissingLunch(userId, today, record);
+    await client.chat.postMessage({ channel: userId, text: '✅ Almuerzo omitido — registrado automáticamente como 13:00–14:00.' });
   }
-  db.fillMissingLunch(userId, today, record);
-  await client.chat.postMessage({ channel: userId, text: '✅ Almuerzo omitido — registrado automáticamente como 13:00–14:00.' });
+  await publishHome(client, userId);
 });
 
 app.action('quick_exit', async ({ body, ack, client }) => {
@@ -627,16 +626,16 @@ app.action('quick_exit', async ({ body, ack, client }) => {
     const record = db.getRecord(userId, today);
     if (record?.exit_time) {
       await client.chat.postMessage({ channel: userId, text: '✅ Tu salida ya está registrada.' });
-      return;
+    } else {
+      const time = t.currentTime();
+      if (record) db.fillMissingLunch(userId, today, record);
+      db.updateField(userId, today, 'exit_time', time);
+      await client.chat.postMessage({ channel: userId, text: txt.asistencia.fieldRegistered('🔴', 'Salida', time) });
     }
-    const time = t.currentTime();
-    if (record) db.fillMissingLunch(userId, today, record);
-    db.updateField(userId, today, 'exit_time', time);
-    await client.chat.postMessage({ channel: userId, text: txt.asistencia.fieldRegistered('🔴', 'Salida', time) });
-    return;
+  } else {
+    await sendVerifyLink(client, userId);
   }
-
-  await sendVerifyLink(client, userId);
+  await publishHome(client, userId);
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -724,17 +723,182 @@ app.command('/ayuda', async ({ command, ack, respond }) => {
 // EVENTS
 // ═══════════════════════════════════════════════════════════════════
 
+// ─── Build the interactive Home tab view ──────────────────────────
+const buildHomeBlocks = (userId) => {
+  const today = t.today();
+  const now   = t.now();
+  const record = db.getRecord(userId, today);
+  const nextAction = blocks.getNextAction(record);
+  const isField = db.isFieldDay(userId, today);
+  const isExempt = db.isUserExemptToday(userId, today);
+  const isHol = db.isHoliday(today);
+
+  const dayLabel = now.format('dddd DD [de] MMMM');
+
+  // Status lines
+  const STATUS_FIELDS = [
+    { key: 'entry_time',  emoji: '🟢', label: 'Entrada'         },
+    { key: 'lunch_start', emoji: '🍽️', label: 'Inicio almuerzo' },
+    { key: 'lunch_end',   emoji: '🔄', label: 'Fin almuerzo'    },
+    { key: 'exit_time',   emoji: '🔴', label: 'Salida'          },
+  ];
+  const statusText = STATUS_FIELDS
+    .map(f => `${f.emoji} ${f.label}: *${record?.[f.key] || '—'}*`)
+    .join('\n');
+
+  // Action button label
+  const ACTION_LABELS = {
+    entry_time:  '🟢  Registrar entrada',
+    lunch_start: '🍽️  Inicio de almuerzo',
+    lunch_end:   '🔄  Fin de almuerzo',
+    exit_time:   '🔴  Registrar salida',
+  };
+
+  // Weekly balance
+  const weekStart = t.weekStart();
+  const weekRecords = db.getUserWeeklyRecords(userId, weekStart, today);
+  const workedHours = Math.round(weekRecords.reduce((s, r) => s + (r.total_hours || 0), 0) * 10) / 10;
+  const daysElapsed = db.countWorkdaysInRange(weekStart, today);
+  const expectedHours = Math.round(daysElapsed * EXPECTED_HOURS * 10) / 10;
+  const diff = Math.round((workedHours - expectedHours) * 10) / 10;
+  const balanceIcon = diff >= 0 ? '🟢' : Math.abs(diff) > 2 ? '🔴' : '🟡';
+
+  // Upcoming approved leaves
+  const allLeaves = db.getUserLeaveRequests(userId, 20);
+  const upcoming = allLeaves.filter(r => r.status === 'approved' && r.date_to >= today);
+  const pending  = allLeaves.filter(r => r.status === 'pending');
+
+  const homeBlocks = [
+    { type: 'header', text: { type: 'plain_text', text: `⚡ Hoopla Asistencia` } },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: `📅 ${dayLabel}` }] },
+    { type: 'divider' },
+  ];
+
+  // ── Today's status ─────────────────────────────────────────────
+  if (isHol) {
+    homeBlocks.push({ type: 'section', text: { type: 'mrkdwn', text: '🏖️ *Hoy es feriado* — ¡disfrutalo!' } });
+  } else if (isExempt) {
+    homeBlocks.push({ type: 'section', text: { type: 'mrkdwn', text: '📅 *Hoy tenés una novedad registrada* (ausencia, vacaciones, etc.)' } });
+  } else {
+    homeBlocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*📋 Tu estado hoy*\n${statusText}` } });
+    if (isField) {
+      homeBlocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '🚗 _Día de campo — podés registrar directo sin link_' }] });
+    }
+
+    if (nextAction) {
+      homeBlocks.push({
+        type: 'actions',
+        elements: [{
+          type: 'button',
+          text: { type: 'plain_text', text: ACTION_LABELS[nextAction] },
+          style: 'primary',
+          action_id: 'home_mark_attendance',
+          value: nextAction,
+        }],
+      });
+    } else {
+      homeBlocks.push({ type: 'section', text: { type: 'mrkdwn', text: '✅ *Jornada completa registrada*' } });
+    }
+  }
+
+  // ── Weekly balance ─────────────────────────────────────────────
+  homeBlocks.push(
+    { type: 'divider' },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*📊 Balance semanal*\nTrabajadas: *${workedHours}hs* · Esperadas: *${expectedHours}hs*\n${balanceIcon} Diferencia: *${diff > 0 ? '+' : ''}${diff}hs*` },
+    },
+  );
+
+  // ── Leave requests ─────────────────────────────────────────────
+  homeBlocks.push(
+    { type: 'divider' },
+    { type: 'section', text: { type: 'mrkdwn', text: '*📝 Ausencias*' } },
+    {
+      type: 'actions',
+      elements: [{
+        type: 'button',
+        text: { type: 'plain_text', text: '📝  Pedir ausencia o vacaciones' },
+        action_id: 'home_request_leave',
+      }],
+    },
+  );
+
+  if (pending.length > 0) {
+    const lines = pending.map(r => {
+      const ti = LEAVE_TYPES[r.type] || { emoji: '📋', label: r.type };
+      return `• ${ti.emoji} ${ti.label}: ${r.date_from === r.date_to ? r.date_from : `${r.date_from} → ${r.date_to}`} ⏳ _pendiente_`;
+    }).join('\n');
+    homeBlocks.push({ type: 'section', text: { type: 'mrkdwn', text: lines } });
+  }
+
+  if (upcoming.length > 0) {
+    const lines = upcoming.map(r => {
+      const ti = LEAVE_TYPES[r.type] || { emoji: '📋', label: r.type };
+      return `• ${ti.emoji} ${ti.label}: ${r.date_from === r.date_to ? r.date_from : `${r.date_from} → ${r.date_to}`} ✅`;
+    }).join('\n');
+    homeBlocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*Próximas ausencias aprobadas:*\n${lines}` } });
+  }
+
+  if (pending.length === 0 && upcoming.length === 0) {
+    homeBlocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '_Sin solicitudes pendientes ni ausencias próximas_' }] });
+  }
+
+  homeBlocks.push(
+    { type: 'divider' },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: `_Actualizado: ${now.format('HH:mm')} · Esta pantalla se refresca sola cada vez que la abrís_` }] },
+  );
+
+  return homeBlocks;
+};
+
+const publishHome = async (client, userId) => {
+  try {
+    await client.views.publish({
+      user_id: userId,
+      view: { type: 'home', blocks: buildHomeBlocks(userId) },
+    });
+  } catch(e) { console.error('[home] Error publishing home:', e.message); }
+};
+
 app.event('app_home_opened', async ({ event, client }) => {
-  const record = db.getRecord(event.user, t.today());
-  await client.views.publish({
-    user_id: event.user,
-    view: { type: 'home', blocks: [
-      { type: 'header', text: { type: 'plain_text', text: '⚡ Hoopla Asistencia' } },
-      { type: 'section', text: { type: 'mrkdwn', text: '`/marcar` fichar · `/campo` trabajo de campo · `/horarios` tu balance · `/reunion` reuniones · `/admin lista` admin' } },
-      { type: 'divider' },
-      ...blocks.buildAttendanceMenu(record),
-    ] },
-  });
+  if (event.tab !== 'home') return;
+  db.upsertUser({ slack_id: event.user, name: event.user, real_name: event.user });
+  await publishHome(client, event.user);
+});
+
+// ── Action: mark attendance from Home ────────────────────────────
+app.action('home_mark_attendance', async ({ body, ack, client }) => {
+  await ack();
+  const userId = body.user.id;
+  const today  = t.today();
+  db.upsertUser({ slack_id: userId, name: body.user.name, real_name: body.user.name });
+
+  if (db.isFieldDay(userId, today)) {
+    const record = db.getOrCreateRecord(userId, today);
+    const next = blocks.getNextAction(record);
+    if (next) {
+      const time = t.currentTime();
+      db.updateField(userId, today, next, time);
+      await client.chat.postMessage({
+        channel: userId,
+        text: txt.asistencia.fieldRegistered(txt.status[next].emoji, txt.status[next].label, time),
+      });
+    }
+  } else {
+    await sendVerifyLink(client, userId);
+  }
+
+  // Refresh home
+  await publishHome(client, userId);
+});
+
+// ── Action: request leave from Home ─────────────────────────────
+app.action('home_request_leave', async ({ body, ack, client }) => {
+  await ack();
+  try {
+    await client.views.open({ trigger_id: body.trigger_id, view: buildRequestModal() });
+  } catch(e) { console.error('[home] Error opening leave modal:', e.message); }
 });
 
 app.event('team_join', async ({ event }) => {

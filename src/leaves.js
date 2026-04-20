@@ -616,4 +616,4 @@ const setupLeaves = (app) => {
   console.log('[leaves] /pedir y /mi-balance configurados');
 };
 
-module.exports = { setupLeaves, LEAVE_TYPES, buildQuotaSummary };
+module.exports = { setupLeaves, LEAVE_TYPES, buildQuotaSummary, buildRequestModal };
