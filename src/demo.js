@@ -28,15 +28,8 @@ const safeRespond = async (respond, text) => {
 };
 
 const setupDemo = (app) => {
-  const DM_ONLY = '🔒 Este comando solo funciona en el DM con *Hoopla-Attendance*.\n\nAbrí la app desde la barra lateral de Slack y usá el comando ahí.';
-
   app.command('/demo', async ({ command, ack, respond, client }) => {
     await ack();
-
-    if (!(command.channel_id || '').startsWith('D')) {
-      await safeRespond(respond, DM_ONLY);
-      return;
-    }
 
     if (!db.isAdmin(command.user_id)) {
       await safeRespond(respond, '🔒 Solo los administradores pueden usar `/demo`.');

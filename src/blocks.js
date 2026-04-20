@@ -144,9 +144,80 @@ const buildPresenceSummaryReport = (data, s, e) => {
   return blocks;
 };
 
+// ─── Quick-action reminder blocks (with buttons) ──────────────────
+
+const buildEntryReminderBlocks = (time) => ({
+  text: `🔔 ${time} — Todavía no registraste tu entrada.`,
+  blocks: [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `🔔 *${time}* — Todavía no registraste tu entrada.` },
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '✅  Registrar entrada' },
+          style: 'primary',
+          action_id: 'quick_entry',
+        },
+      ],
+    },
+  ],
+});
+
+const buildLunchReminderBlocks = () => ({
+  text: '🍽️ ¿Ya almorzaste? No registraste tu pausa de almuerzo.',
+  blocks: [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: '🍽️ ¿Ya almorzaste? No registraste tu pausa de almuerzo.' },
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '🍽️  Marcar almuerzo' },
+          style: 'primary',
+          action_id: 'quick_lunch',
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '🚫  Sin almuerzo hoy' },
+          action_id: 'quick_skip_lunch',
+        },
+      ],
+    },
+  ],
+});
+
+const buildExitReminderBlocks = () => ({
+  text: '🔔 Acordate de registrar tu salida del día.',
+  blocks: [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: '🔔 Acordate de registrar tu salida del día.' },
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '🚪  Registrar salida' },
+          style: 'primary',
+          action_id: 'quick_exit',
+        },
+      ],
+    },
+  ],
+});
+
 module.exports = {
   STATUS, OVERRIDE_LABELS, getNextAction,
   buildAttendanceMenu, buildConfirmation, buildWeeklyReport, buildMissingAlert,
   buildDailySummary, buildOvertimeAlert, buildLunchReminder,
   buildAdminMenu, buildPingSummaryReport, buildPresenceSummaryReport,
+  buildEntryReminderBlocks, buildLunchReminderBlocks, buildExitReminderBlocks,
 };

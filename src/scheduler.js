@@ -3,7 +3,8 @@ const t = require('./time');
 const fs = require('fs');
 const db = require('./database');
 const texts = require('./texts');
-const { buildWeeklyReport, buildMissingAlert, buildDailySummary, buildOvertimeAlert, buildLunchReminder } = require('./blocks');
+const { buildWeeklyReport, buildMissingAlert, buildDailySummary, buildOvertimeAlert, buildLunchReminder,
+  buildEntryReminderBlocks, buildLunchReminderBlocks, buildExitReminderBlocks } = require('./blocks');
 const { runPingCycle, runPresenceCheck } = require('./activity');
 const { generateMonthlyExcel } = require('./excel');
 
@@ -13,7 +14,6 @@ const WORK_END_HOUR = parseInt(process.env.WORK_END_HOUR || '18', 10);
 const TZ = t.TZ;
 
 // ─── Reusable entry reminder check ──────────────────────────────────
-// Called both from cron and immediately on startup
 const runEntryReminderCheck = async (app) => {
   const now = t.now();
   const hour = now.hour();
@@ -26,10 +26,8 @@ const runEntryReminderCheck = async (app) => {
   let count = 0;
   for (const user of missing) {
     if (db.isUserExemptToday(user.slack_id, today)) continue;
-    await app.client.chat.postMessage({
-      channel: user.slack_id,
-      text: texts.reminders.entryMissingFollowUp(now.format('HH:mm')),
-    });
+    const msg = buildEntryReminderBlocks(now.format('HH:mm'));
+    await app.client.chat.postMessage({ channel: user.slack_id, ...msg });
     count++;
   }
   if (count > 0) console.log(`[scheduler] Recordatorio entrada ${now.format('HH:mm')} → ${count} personas`);
@@ -50,7 +48,8 @@ const setupScheduler = (app) => {
       const missing = db.getMissingToday(today);
       for (const user of missing) {
         if (db.isUserExemptToday(user.slack_id, today)) continue;
-        await app.client.chat.postMessage({ channel: user.slack_id, text: texts.reminders.entryMissing() });
+        const msg = buildEntryReminderBlocks('09:35');
+        await app.client.chat.postMessage({ channel: user.slack_id, ...msg });
       }
       if (missing.length > 0) console.log(`[scheduler] 9:35 entry reminder → ${missing.length} personas`);
     } catch (err) { console.error('[scheduler] Error 9:35 reminder:', err); }
@@ -92,11 +91,8 @@ const setupScheduler = (app) => {
       for (const r of noLunch) {
         if (db.isUserExemptToday(r.slack_id, today)) continue;
         if (db.isFieldDay(r.slack_id, today)) continue;
-        await app.client.chat.postMessage({
-          channel: r.slack_id,
-          text: texts.reminders.lunchMissing,
-          blocks: buildLunchReminder(),
-        });
+        const msg = buildLunchReminderBlocks();
+        await app.client.chat.postMessage({ channel: r.slack_id, ...msg });
       }
       if (noLunch.length > 0) console.log(`[scheduler] 14:00 lunch reminder → ${noLunch.length}`);
     } catch (err) { console.error('[scheduler] Error 14:00:', err); }
@@ -125,11 +121,9 @@ const setupScheduler = (app) => {
           });
           console.log(`[scheduler] Auto-closed field/meeting: ${r.real_name || r.name}`);
         } else {
-          // Office worker — send reminder
-          await app.client.chat.postMessage({
-            channel: r.slack_id,
-            text: texts.reminders.exitMissing,
-          });
+          // Office worker — send reminder with button
+          const msg = buildExitReminderBlocks();
+          await app.client.chat.postMessage({ channel: r.slack_id, ...msg });
         }
       }
     } catch (err) { console.error('[scheduler] Error 18:30:', err); }

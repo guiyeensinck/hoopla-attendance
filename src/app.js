@@ -246,8 +246,6 @@ app.command('/reporte', async ({ command, ack, respond }) => {
 
 app.command('/admin', async ({ command, ack, respond, client }) => {
   await ack();
-  if (!isDM(command)) { await respond({ response_type: 'ephemeral', text: DM_ONLY_MSG }); return; }
-
   const userId = command.user_id;
   if (!db.isAdmin(userId)) { await respond({ response_type: 'ephemeral', text: txt.errors.noPermission }); return; }
 
@@ -551,6 +549,94 @@ app.action('ping_respond', async ({ action, body, ack, client }) => {
   const ch = body.channel?.id || body.user.id;
   const text = result ? txt.pings.responded(Math.round(result.response_ms / 1000)) : txt.pings.expired;
   await client.chat.postEphemeral({ channel: ch, user: body.user.id, text });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// QUICK-ACTION BUTTONS (entry / lunch / exit reminders)
+// ═══════════════════════════════════════════════════════════════════
+
+// Helper: send the verification link to the user's DM
+const sendVerifyLink = async (client, userId) => {
+  const { token, pin } = createToken(userId);
+  const url = `${getBaseUrl()}/verify/${token}`;
+  await client.chat.postMessage({
+    channel: userId,
+    text: `👉 Tu link para registrar: ${url}`,
+    blocks: [
+      { type: 'section', text: { type: 'mrkdwn', text: `👉 *Abrí el link para registrar:*\n<${url}|Registrar asistencia>` } },
+      { type: 'section', text: { type: 'mrkdwn', text: txt.asistencia.pinLabel(pin) } },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: txt.asistencia.expireNote }] },
+    ],
+  });
+};
+
+app.action('quick_entry', async ({ body, ack, client }) => {
+  await ack();
+  const userId = body.user.id;
+  const today = t.today();
+  db.upsertUser({ slack_id: userId, name: body.user.name, real_name: body.user.name });
+
+  if (db.isFieldDay(userId, today)) {
+    const record = db.getOrCreateRecord(userId, today);
+    const next = blocks.getNextAction(record);
+    if (!next) {
+      await client.chat.postMessage({ channel: userId, text: txt.asistencia.fieldAlreadyComplete });
+      return;
+    }
+    const time = t.currentTime();
+    db.updateField(userId, today, next, time);
+    await client.chat.postMessage({ channel: userId, text: txt.asistencia.fieldRegistered(txt.status[next].emoji, txt.status[next].label, time) });
+    return;
+  }
+
+  await sendVerifyLink(client, userId);
+});
+
+app.action('quick_lunch', async ({ body, ack, client }) => {
+  await ack();
+  const userId = body.user.id;
+  const today = t.today();
+  db.upsertUser({ slack_id: userId, name: body.user.name, real_name: body.user.name });
+  await sendVerifyLink(client, userId);
+});
+
+app.action('quick_skip_lunch', async ({ body, ack, client }) => {
+  await ack();
+  const userId = body.user.id;
+  const today = t.today();
+  const record = db.getRecord(userId, today);
+  if (!record?.entry_time) {
+    await client.chat.postMessage({ channel: userId, text: '⚠️ No tenés entrada registrada hoy.' });
+    return;
+  }
+  if (record.lunch_start) {
+    await client.chat.postMessage({ channel: userId, text: '✅ El almuerzo ya está registrado.' });
+    return;
+  }
+  db.fillMissingLunch(userId, today, record);
+  await client.chat.postMessage({ channel: userId, text: '✅ Almuerzo omitido — registrado automáticamente como 13:00–14:00.' });
+});
+
+app.action('quick_exit', async ({ body, ack, client }) => {
+  await ack();
+  const userId = body.user.id;
+  const today = t.today();
+  db.upsertUser({ slack_id: userId, name: body.user.name, real_name: body.user.name });
+
+  if (db.isFieldDay(userId, today)) {
+    const record = db.getRecord(userId, today);
+    if (record?.exit_time) {
+      await client.chat.postMessage({ channel: userId, text: '✅ Tu salida ya está registrada.' });
+      return;
+    }
+    const time = t.currentTime();
+    if (record) db.fillMissingLunch(userId, today, record);
+    db.updateField(userId, today, 'exit_time', time);
+    await client.chat.postMessage({ channel: userId, text: txt.asistencia.fieldRegistered('🔴', 'Salida', time) });
+    return;
+  }
+
+  await sendVerifyLink(client, userId);
 });
 
 // ═══════════════════════════════════════════════════════════════════
