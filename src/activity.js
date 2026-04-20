@@ -63,7 +63,7 @@ const buildPingMessage = (pingId) => {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `🏓 *Check de actividad*\n¿Seguís ahí? Tocá el botón para confirmar.`,
+        text: `👋 *¡Hola! Solo chequeamos que estés por acá.*\n\nTocá el botón cuando puedas 😊`,
       },
     },
     {
@@ -83,7 +83,7 @@ const buildPingMessage = (pingId) => {
       elements: [
         {
           type: 'mrkdwn',
-          text: `⏱️ Tenés ${PING_TIMEOUT_MIN} minutos para responder`,
+          text: `_Solo aparece 3 veces por día, al azar._`,
         },
       ],
     },
