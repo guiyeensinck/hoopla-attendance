@@ -42,6 +42,11 @@ const extractUserMention = (str = '') => {
   return null;
 };
 
+// ─── DM-only guard ────────────────────────────────────────────────
+// Slash commands must be used from the DM with the bot, not from channels or group DMs.
+const DM_ONLY_MSG = '🔒 Este comando solo funciona en el DM con *Hoopla-Attendance*.\n\nAbrí la app desde la barra lateral de Slack y usá el comando ahí.';
+const isDM = (command) => (command.channel_id || '').startsWith('D');
+
 // ─── Track last interaction for auto-close ─────────────────────────
 app.use(async ({ next, body }) => {
   try {
@@ -57,7 +62,9 @@ app.use(async ({ next, body }) => {
 // /marcar
 // ═══════════════════════════════════════════════════════════════════
 
-app.command('/marcar', async ({ command, ack }) => {
+app.command('/marcar', async ({ command, ack, respond }) => {
+  await ack();
+  if (!isDM(command)) { await respond({ response_type: 'ephemeral', text: DM_ONLY_MSG }); return; }
   const { user_id, user_name } = command;
   db.upsertUser({ slack_id: user_id, name: user_name, real_name: user_name });
   const today = t.today();
@@ -66,10 +73,10 @@ app.command('/marcar', async ({ command, ack }) => {
   if (db.isFieldDay(user_id, today)) {
     const record = db.getOrCreateRecord(user_id, today);
     const next = blocks.getNextAction(record);
-    if (!next) { await ack({ response_type: 'ephemeral', text: txt.asistencia.fieldAlreadyComplete }); return; }
+    if (!next) { await respond({ response_type: 'ephemeral', text: txt.asistencia.fieldAlreadyComplete }); return; }
     const time = t.currentTime();
     db.updateField(user_id, today, next, time);
-    await ack({ response_type: 'ephemeral', text: txt.asistencia.fieldRegistered(txt.status[next].emoji, txt.status[next].label, time) });
+    await respond({ response_type: 'ephemeral', text: txt.asistencia.fieldRegistered(txt.status[next].emoji, txt.status[next].label, time) });
     return;
   }
 
@@ -77,7 +84,7 @@ app.command('/marcar', async ({ command, ack }) => {
   const { token, pin } = createToken(user_id);
   const url = `${getBaseUrl()}/verify/${token}`;
 
-  await ack({
+  await respond({
     response_type: 'ephemeral',
     blocks: [
       { type: 'section', text: { type: 'mrkdwn', text: txt.asistencia.title } },
@@ -92,22 +99,26 @@ app.command('/marcar', async ({ command, ack }) => {
 // /campo
 // ═══════════════════════════════════════════════════════════════════
 
-app.command('/campo', async ({ command, ack }) => {
+app.command('/campo', async ({ command, ack, respond }) => {
+  await ack();
+  if (!isDM(command)) { await respond({ response_type: 'ephemeral', text: DM_ONLY_MSG }); return; }
   const { user_id, user_name } = command;
   const reason = command.text.trim() || 'Trabajo de campo';
   const today = t.today();
   db.upsertUser({ slack_id: user_id, name: user_name, real_name: user_name });
-  if (db.isFieldDay(user_id, today)) { await ack({ response_type: 'ephemeral', text: txt.campo.alreadyDeclared }); return; }
+  if (db.isFieldDay(user_id, today)) { await respond({ response_type: 'ephemeral', text: txt.campo.alreadyDeclared }); return; }
   db.addOverride(user_id, today, 'field', reason, user_id);
   db.setWorkMode(user_id, today, 'field');
-  await ack({ response_type: 'ephemeral', text: txt.campo.confirmed(reason) });
+  await respond({ response_type: 'ephemeral', text: txt.campo.confirmed(reason) });
 });
 
 // ═══════════════════════════════════════════════════════════════════
 // /horarios — Daily status + weekly balance
 // ═══════════════════════════════════════════════════════════════════
 
-app.command('/horarios', async ({ command, ack }) => {
+app.command('/horarios', async ({ command, ack, respond }) => {
+  await ack();
+  if (!isDM(command)) { await respond({ response_type: 'ephemeral', text: DM_ONLY_MSG }); return; }
   const userId = command.user_id;
   const today = t.today();
   const now = t.now();
@@ -177,7 +188,7 @@ app.command('/horarios', async ({ command, ack }) => {
     meetingMsg = `\n📍 En reunión desde las ${meeting.start_time}${meeting.reason ? ` (${meeting.reason})` : ''}`;
   }
 
-  await ack({
+  await respond({
     response_type: 'ephemeral',
     blocks: [
       { type: 'header', text: { type: 'plain_text', text: `📊 Tu estado — ${t.now().format('DD/MM/YYYY')}` } },
@@ -193,7 +204,9 @@ app.command('/horarios', async ({ command, ack }) => {
 // /reunion — Start/end meetings
 // ═══════════════════════════════════════════════════════════════════
 
-app.command('/reunion', async ({ command, ack }) => {
+app.command('/reunion', async ({ command, ack, respond }) => {
+  await ack();
+  if (!isDM(command)) { await respond({ response_type: 'ephemeral', text: DM_ONLY_MSG }); return; }
   const userId = command.user_id;
   const today = t.today();
   const now = t.currentTime();
@@ -202,18 +215,16 @@ app.command('/reunion', async ({ command, ack }) => {
   db.upsertUser({ slack_id: userId, name: command.user_name, real_name: command.user_name });
 
   if (args.toLowerCase() === 'fin' || args.toLowerCase() === 'end') {
-    // End active meeting
     const active = db.getActiveMeeting(userId, today);
-    if (!active) { await ack({ response_type: 'ephemeral', text: txt.meetings.noActive }); return; }
+    if (!active) { await respond({ response_type: 'ephemeral', text: txt.meetings.noActive }); return; }
     const ended = db.endMeeting(active.id, now);
-    await ack({ response_type: 'ephemeral', text: txt.meetings.ended(now, ended.duration_min) });
+    await respond({ response_type: 'ephemeral', text: txt.meetings.ended(now, ended.duration_min) });
   } else {
-    // Start new meeting
     const active = db.getActiveMeeting(userId, today);
-    if (active) { await ack({ response_type: 'ephemeral', text: txt.meetings.alreadyInMeeting }); return; }
+    if (active) { await respond({ response_type: 'ephemeral', text: txt.meetings.alreadyInMeeting }); return; }
     const reason = args || 'Reunión';
     db.startMeeting(userId, today, now, reason);
-    await ack({ response_type: 'ephemeral', text: txt.meetings.started(reason, now) });
+    await respond({ response_type: 'ephemeral', text: txt.meetings.started(reason, now) });
   }
 });
 
@@ -221,10 +232,12 @@ app.command('/reunion', async ({ command, ack }) => {
 // /reporte
 // ═══════════════════════════════════════════════════════════════════
 
-app.command('/reporte', async ({ command, ack }) => {
+app.command('/reporte', async ({ command, ack, respond }) => {
+  await ack();
+  if (!isDM(command)) { await respond({ response_type: 'ephemeral', text: DM_ONLY_MSG }); return; }
   const args = command.text.trim().toLowerCase();
   const s = args === 'mensual' || args === 'mes' ? t.monthStart() : t.weekStart();
-  await ack({ response_type: 'ephemeral', blocks: blocks.buildWeeklyReport(db.getWeeklySummary(s, t.today()), s, t.today()) });
+  await respond({ response_type: 'ephemeral', blocks: blocks.buildWeeklyReport(db.getWeeklySummary(s, t.today()), s, t.today()) });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -233,6 +246,7 @@ app.command('/reporte', async ({ command, ack }) => {
 
 app.command('/admin', async ({ command, ack, respond, client }) => {
   await ack();
+  if (!isDM(command)) { await respond({ response_type: 'ephemeral', text: DM_ONLY_MSG }); return; }
 
   const userId = command.user_id;
   if (!db.isAdmin(userId)) { await respond({ response_type: 'ephemeral', text: txt.errors.noPermission }); return; }
@@ -589,8 +603,9 @@ app.view('modal_admin_agregar', async ({ view, ack, body, client }) => {
 // AYUDA
 // ═══════════════════════════════════════════════════════════════════
 
-app.command('/ayuda', async ({ ack, respond }) => {
+app.command('/ayuda', async ({ command, ack, respond }) => {
   await ack();
+  if (!isDM(command)) { await respond({ response_type: 'ephemeral', text: DM_ONLY_MSG }); return; }
   await respond({
     response_type: 'ephemeral',
     blocks: [

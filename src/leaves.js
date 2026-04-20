@@ -405,9 +405,15 @@ const buildQuotaSummary = (slackId) => {
 
 const setupLeaves = (app) => {
 
+  const DM_ONLY = '🔒 Este comando solo funciona en el DM con *Hoopla-Attendance*.\n\nAbrí la app desde la barra lateral de Slack y usá el comando ahí.';
+
   // ── /pedir — open modal ──────────────────────────────────────────
-  app.command('/pedir', async ({ command, ack, client }) => {
+  app.command('/pedir', async ({ command, ack, respond, client }) => {
     await ack();
+    if (!(command.channel_id || '').startsWith('D')) {
+      await respond({ response_type: 'ephemeral', text: DM_ONLY });
+      return;
+    }
     const { user_id, user_name } = command;
     db.upsertUser({ slack_id: user_id, name: user_name, real_name: user_name });
     try {
