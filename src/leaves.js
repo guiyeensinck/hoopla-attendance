@@ -115,8 +115,8 @@ const buildRequestModal = () => ({
           {
             label: { type: 'plain_text', text: '🏖️  Vacaciones' },
             options: [
-              { text: { type: 'plain_text', text: '🏖️  Vacaciones de verano (14 días · Oct–Abr)' }, value: 'vacation_summer' },
-              { text: { type: 'plain_text', text: '⛷️  Vacaciones de invierno (7 días · Jul–Sep)' }, value: 'vacation_winter' },
+              { text: { type: 'plain_text', text: '🏖️  Vacaciones de verano' }, value: 'vacation_summer' },
+              { text: { type: 'plain_text', text: '⛷️  Vacaciones de invierno' }, value: 'vacation_winter' },
             ],
           },
           {
@@ -137,7 +137,7 @@ const buildRequestModal = () => ({
           {
             label: { type: 'plain_text', text: '📚  Estudio' },
             options: [
-              { text: { type: 'plain_text', text: '📚  Día de examen (solo universitarios)' }, value: 'exam' },
+              { text: { type: 'plain_text', text: '📚  Día de examen' }, value: 'exam' },
             ],
           },
           {
@@ -189,7 +189,7 @@ const buildRequestModal = () => ({
       type: 'context',
       elements: [{
         type: 'mrkdwn',
-        text: '📋 *Políticas resumidas:*\n• Vacaciones: +4 semanas anticipación, inicia lunes, feriados no suman días\n• Trámites: 2 días/año, máx 1 día c/2 meses, no en semana corta ni semana previa\n• Médico: 4 medios días/año con certificado\n• Examen: 10 días/año (5 por semestre), máx 4/mes, +10 días hábiles anticipación\n• No mezclar examen + médico + trámites en la misma semana',
+        text: '⚠️ *Pedir no es otorgar.* La empresa se reserva el derecho de definir las fechas según las necesidades operativas.',
       }],
     },
   ],
@@ -415,15 +415,6 @@ const setupLeaves = (app) => {
     } catch(e) {
       console.error('[leaves] Error opening modal:', e.message);
     }
-  });
-
-  // ── /mi-balance — show quota summary ────────────────────────────
-  app.command('/mi-balance', async ({ command, ack, respond }) => {
-    await ack();
-    db.upsertUser({ slack_id: command.user_id, name: command.user_name, real_name: command.user_name });
-    try {
-      await respond({ response_type: 'ephemeral', text: buildQuotaSummary(command.user_id) });
-    } catch(e) { console.error('[leaves] /mi-balance error:', e.message); }
   });
 
   // ── View submission: modal_leave_request ─────────────────────────

@@ -28,14 +28,11 @@ const safeRespond = async (respond, text) => {
 };
 
 const setupDemo = (app) => {
-  const SUPER_ADMIN = (process.env.ADMIN_USER_IDS || '').split(',').map(s => s.trim()).filter(Boolean)[0]
-    || process.env.SOLO_USER_ID || '';
-
   app.command('/demo', async ({ command, ack, respond, client }) => {
     await ack();
 
-    if (command.user_id !== SUPER_ADMIN) {
-      await safeRespond(respond, '🔒 Solo el super admin puede usar `/demo`.');
+    if (!db.isAdmin(command.user_id)) {
+      await safeRespond(respond, '🔒 Solo los administradores pueden usar `/demo`.');
       return;
     }
 

@@ -7,7 +7,7 @@ const txt = require('./texts');
 const { setupScheduler } = require('./scheduler');
 const { setupDashboard } = require('./dashboard');
 const { setupDemo } = require('./demo');
-const { setupLeaves, LEAVE_TYPES } = require('./leaves');
+const { setupLeaves, LEAVE_TYPES, buildQuotaSummary } = require('./leaves');
 const { createToken } = require('./verification');
 
 const EXPECTED_HOURS = parseFloat(process.env.EXPECTED_HOURS_PER_DAY || '8');
@@ -410,6 +410,103 @@ app.command('/admin', async ({ command, ack, respond, client }) => {
         await respond({ response_type: 'ephemeral', text: `${statusEmoji} *${name}* — días de examen: *${flag === 'on' ? 'activados' : 'desactivados'}*.` });
         break;
       }
+      case 'dashboard': case 'hoy': {
+        // Snapshot of today: present, missing, on leave
+        const today = t.today();
+        const now   = t.now();
+        const dayName = now.format('dddd DD/MM/YYYY');
+
+        const tracked    = db.getTrackedUsers();
+        const records    = db.getRecordsByDateRange(today, today);
+        const overrides  = db.getOverridesForDate(today);
+
+        const presentIds = new Set(records.filter(r => r.entry_time).map(r => r.slack_id));
+        const leaveIds   = new Set(overrides.filter(o => o.slack_id).map(o => o.slack_id));
+        const isHoliday  = db.isHoliday(today);
+
+        const present  = tracked.filter(u => presentIds.has(u.slack_id));
+        const onLeave  = tracked.filter(u => !presentIds.has(u.slack_id) && leaveIds.has(u.slack_id));
+        const missing  = tracked.filter(u => !presentIds.has(u.slack_id) && !leaveIds.has(u.slack_id));
+
+        const displayName = (u) => u.real_name || u.name || u.slack_id;
+
+        // Build present list with status
+        const presentLines = present.map(u => {
+          const r = records.find(r => r.slack_id === u.slack_id);
+          const parts = [];
+          if (r?.entry_time)  parts.push(`entrada ${r.entry_time}`);
+          if (r?.lunch_start && !r?.lunch_end) parts.push('en almuerzo');
+          if (r?.exit_time)   parts.push(`salida ${r.exit_time}`);
+          const mode = r?.location === 'agencia' ? '🏢' : r?.location === 'home_office' ? '🏠' : r?.work_mode === 'field' ? '🚗' : '';
+          return `  ${mode} *${displayName(u)}* — ${parts.join(' · ') || '—'}`;
+        }).join('\n') || '  _Nadie por ahora_';
+
+        // Build on-leave list
+        const leaveLines = onLeave.map(u => {
+          const ov = overrides.find(o => o.slack_id === u.slack_id);
+          const typeLabels = { vacation: '🏖️ Vacaciones', medical: '🏥 Médico', day_off: '📅 Día libre', absent: '💙 Ausencia', early_exit: '🌇 Salida anticipada', field: '🚗 Campo' };
+          return `  *${displayName(u)}* — ${typeLabels[ov?.type] || ov?.type || '?'}${ov?.reason ? ` _(${ov.reason})_` : ''}`;
+        }).join('\n') || '  _Nadie_';
+
+        const missingLines = missing.map(u => `  *${displayName(u)}*`).join('\n') || '  ✅ Todos ficharon';
+
+        // Averages
+        const completedToday = records.filter(r => r.total_hours > 0);
+        const avgHours = completedToday.length
+          ? (completedToday.reduce((s, r) => s + r.total_hours, 0) / completedToday.length).toFixed(1)
+          : '—';
+
+        const dashBlocks = [
+          { type: 'header', text: { type: 'plain_text', text: `📋 Dashboard — ${dayName}` } },
+          ...(isHoliday ? [{ type: 'section', text: { type: 'mrkdwn', text: '🏖️ *Hoy es feriado*' } }] : []),
+          {
+            type: 'section',
+            fields: [
+              { type: 'mrkdwn', text: `*✅ Presentes*\n${present.length}` },
+              { type: 'mrkdwn', text: `*⚠️ Sin fichar*\n${missing.length}` },
+              { type: 'mrkdwn', text: `*📅 Con novedad*\n${onLeave.length}` },
+              { type: 'mrkdwn', text: `*⏱️ Prom. horas*\n${avgHours}hs` },
+            ],
+          },
+          { type: 'divider' },
+          { type: 'section', text: { type: 'mrkdwn', text: `✅ *Presentes (${present.length})*\n${presentLines}` } },
+          { type: 'divider' },
+          { type: 'section', text: { type: 'mrkdwn', text: `⚠️ *Sin fichar (${missing.length})*\n${missingLines}` } },
+        ];
+
+        if (onLeave.length > 0) {
+          dashBlocks.push({ type: 'divider' });
+          dashBlocks.push({ type: 'section', text: { type: 'mrkdwn', text: `📅 *Con novedad (${onLeave.length})*\n${leaveLines}` } });
+        }
+
+        dashBlocks.push({
+          type: 'context',
+          elements: [{ type: 'mrkdwn', text: `_Actualizado: ${now.format('HH:mm')} · Solo vos ves esto_` }],
+        });
+
+        await respond({ response_type: 'ephemeral', blocks: dashBlocks });
+        break;
+      }
+      case 'balance': {
+        // /admin balance @usuario  — show quota summary for a user
+        const targetRaw = parts[1] || '';
+        if (!targetRaw) {
+          await respond({ response_type: 'ephemeral', text: '⚠️ Uso: `/admin balance @usuario`' });
+          return;
+        }
+        const mention = extractUserMention(targetRaw);
+        if (!mention) {
+          await respond({ response_type: 'ephemeral', text: '⚠️ No pude identificar el usuario.' });
+          return;
+        }
+        const targetUser = db.getUser(mention.id);
+        if (!targetUser) {
+          await respond({ response_type: 'ephemeral', text: `⚠️ Usuario \`${mention.id}\` no encontrado.` });
+          return;
+        }
+        await respond({ response_type: 'ephemeral', text: buildQuotaSummary(mention.id) });
+        break;
+      }
       case 'actividad': case 'pings': {
         const s = t.weekStart(), e = t.today();
         await respond({ response_type: 'ephemeral', blocks: blocks.buildPingSummaryReport(db.getPingSummary(s, e), s, e) });
@@ -499,7 +596,7 @@ app.command('/ayuda', async ({ ack, respond }) => {
     blocks: [
       { type: 'header', text: { type: 'plain_text', text: '⚡ Hoopla Asistencia — Comandos' } },
       { type: 'section', text: { type: 'mrkdwn', text: '*🙋 Ausencias y licencias*' } },
-      { type: 'section', text: { type: 'mrkdwn', text: '`/pedir` — Solicitá vacaciones, día libre, examen, medio día, médico u otra ausencia. La solicitud queda pendiente hasta que un admin la apruebe o rechace.\n`/mi-balance` — Consultá cuántos días de cada tipo te quedan en el año.' } },
+      { type: 'section', text: { type: 'mrkdwn', text: '`/pedir` — Solicitá vacaciones, día libre, examen, medio día, médico u otra ausencia. La solicitud queda pendiente hasta que un admin la apruebe o rechace.' } },
       { type: 'divider' },
       { type: 'section', text: { type: 'mrkdwn', text: '*📋 Registro diario*' } },
       { type: 'section', text: { type: 'mrkdwn', text: '`/marcar` — Registrá tu entrada, almuerzo o salida del día. Te manda un link con PIN para confirmar desde la compu.' } },
@@ -515,7 +612,7 @@ app.command('/ayuda', async ({ ack, respond }) => {
       { type: 'section', text: { type: 'mrkdwn', text: '`/reporte semanal` — Resumen de horas de la semana.\n`/reporte mensual` — Resumen del mes.' } },
       { type: 'divider' },
       { type: 'section', text: { type: 'mrkdwn', text: '*👥 Gestión de usuarios (admin)*' } },
-      { type: 'section', text: { type: 'mrkdwn', text: '`/admin lista` — Ver todos los usuarios.\n`/admin agregar @usuario` — Sumá a alguien al seguimiento.\n`/admin sacar @usuario` — Quitá a alguien del seguimiento.\n`/admin ausencias` — Ver solicitudes de ausencia pendientes.\n`/admin feriados [año]` — Ver los feriados cargados.\n`/admin estudiante @usuario on|off` — Activar/desactivar días de examen (requiere carrera universitaria).' } },
+      { type: 'section', text: { type: 'mrkdwn', text: '`/admin dashboard` — Estado del día en tiempo real (presentes, faltantes, novedades).\n`/admin balance @usuario` — Balance de ausencias de un empleado.\n`/admin lista` — Ver todos los usuarios.\n`/admin agregar @usuario` — Sumá a alguien al seguimiento.\n`/admin sacar @usuario` — Quitá a alguien del seguimiento.\n`/admin ausencias` — Ver solicitudes de ausencia pendientes.\n`/admin feriados [año]` — Ver los feriados cargados.\n`/admin estudiante @usuario on|off` — Activar días de examen.' } },
       { type: 'divider' },
       { type: 'context', elements: [{ type: 'mrkdwn', text: '_Solo vos ves este mensaje_ · ⚡ Hoopla Asistencia' }] },
     ],
