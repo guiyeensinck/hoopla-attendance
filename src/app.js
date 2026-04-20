@@ -247,21 +247,53 @@ app.command('/admin', async ({ command, ack, respond, client }) => {
         break;
       }
       case 'agregar': case 'add': {
-        const mention = extractUserMention(parts[1] || '');
-        if (!mention) {
-          await respond({ response_type: 'ephemeral', text: `⚠️ Uso: \`/admin agregar @usuario\`\n_Debug — texto recibido: \`${command.text}\` | partes: \`${JSON.stringify(parts)}\`_` });
-          return;
-        }
-        db.upsertUser({ slack_id: mention.id, name: mention.name, real_name: mention.name });
-        db.setTracked(1, mention.id);
-        await respond({ response_type: 'ephemeral', text: `✅ *${mention.name}* agregado al seguimiento.` });
+        await client.views.open({
+          trigger_id: command.trigger_id,
+          view: {
+            type: 'modal',
+            callback_id: 'modal_admin_agregar',
+            title: { type: 'plain_text', text: 'Agregar usuario' },
+            submit: { type: 'plain_text', text: 'Agregar' },
+            close: { type: 'plain_text', text: 'Cancelar' },
+            blocks: [
+              {
+                type: 'input',
+                block_id: 'blk_user',
+                label: { type: 'plain_text', text: '¿A quién agregás al seguimiento de asistencia?' },
+                element: {
+                  type: 'users_select',
+                  action_id: 'sel_user',
+                  placeholder: { type: 'plain_text', text: 'Elegí un usuario' },
+                },
+              },
+            ],
+          },
+        });
         break;
       }
       case 'sacar': case 'quitar': case 'remove': {
-        const tid = extractUserId(parts[1] || '');
-        if (!tid) { await respond({ response_type: 'ephemeral', text: '⚠️ Uso: `/admin sacar @usuario`' }); return; }
-        db.setTracked(0, tid);
-        await respond({ response_type: 'ephemeral', text: `✅ *${db.getUser(tid)?.real_name || tid}* sacado del seguimiento.` });
+        await client.views.open({
+          trigger_id: command.trigger_id,
+          view: {
+            type: 'modal',
+            callback_id: 'modal_admin_sacar',
+            title: { type: 'plain_text', text: 'Quitar usuario' },
+            submit: { type: 'plain_text', text: 'Quitar' },
+            close: { type: 'plain_text', text: 'Cancelar' },
+            blocks: [
+              {
+                type: 'input',
+                block_id: 'blk_user',
+                label: { type: 'plain_text', text: '¿A quién sacás del seguimiento de asistencia?' },
+                element: {
+                  type: 'users_select',
+                  action_id: 'sel_user',
+                  placeholder: { type: 'plain_text', text: 'Elegí un usuario' },
+                },
+              },
+            ],
+          },
+        });
         break;
       }
       case 'admin': {
@@ -366,6 +398,33 @@ app.action('ping_respond', async ({ action, body, ack, client }) => {
   const ch = body.channel?.id || body.user.id;
   const text = result ? txt.pings.responded(Math.round(result.response_ms / 1000)) : txt.pings.expired;
   await client.chat.postEphemeral({ channel: ch, user: body.user.id, text });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// MODAL: agregar usuario
+// ═══════════════════════════════════════════════════════════════════
+
+app.view('modal_admin_sacar', async ({ view, ack, body, client }) => {
+  await ack();
+  const adminId = body.user.id;
+  if (!db.isAdmin(adminId)) return;
+  const targetId = view.state.values.blk_user.sel_user.selected_user;
+  if (!targetId) return;
+  db.setTracked(0, targetId);
+  const name = db.getUser(targetId)?.real_name || targetId;
+  await client.chat.postMessage({ channel: adminId, text: `✅ *${name}* sacado del seguimiento de asistencia.` });
+});
+
+app.view('modal_admin_agregar', async ({ view, ack, body, client }) => {
+  await ack();
+  const adminId = body.user.id;
+  if (!db.isAdmin(adminId)) return;
+  const targetId = view.state.values.blk_user.sel_user.selected_user;
+  if (!targetId) return;
+  db.upsertUser({ slack_id: targetId, name: targetId, real_name: targetId });
+  db.setTracked(1, targetId);
+  const name = db.getUser(targetId)?.real_name || targetId;
+  await client.chat.postMessage({ channel: adminId, text: `✅ *${name}* agregado al seguimiento de asistencia.` });
 });
 
 // ═══════════════════════════════════════════════════════════════════
