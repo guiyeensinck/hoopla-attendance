@@ -96,7 +96,12 @@ const buildAdminMenu = (users, trackedIds) => {
     { type: 'divider' },
     { type: 'section', text: { type: 'mrkdwn', text: '*Trackeados:*' } },
   ];
-  const list = users.filter(u => trackedIds.includes(u.slack_id)).map(u => `• ${u.real_name || u.name}`).join('\n');
+  const displayName = (u) => {
+    const name = u.real_name || u.name || '';
+    // If stored name is just the Slack ID (no real name yet), use @mention so Slack resolves it
+    return /^U[A-Z0-9]{6,}$/.test(name) ? `<@${u.slack_id}>` : name;
+  };
+  const list = users.filter(u => trackedIds.includes(u.slack_id)).map(u => `• ${displayName(u)}`).join('\n');
   blocks.push({ type: 'section', text: { type: 'mrkdwn', text: list || '_Ninguno_' } });
   blocks.push({ type: 'divider' }, { type: 'section', text: { type: 'mrkdwn', text: [
     '*Comandos:*',

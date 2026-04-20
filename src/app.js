@@ -411,7 +411,8 @@ app.view('modal_admin_sacar', async ({ view, ack, body, client }) => {
   const targetId = view.state.values.blk_user.sel_user.selected_user;
   if (!targetId) return;
   db.setTracked(0, targetId);
-  const name = db.getUser(targetId)?.real_name || targetId;
+  const stored = db.getUser(targetId);
+  const name = (stored?.real_name && stored.real_name !== targetId) ? stored.real_name : `<@${targetId}>`;
   await client.chat.postMessage({ channel: adminId, text: `✅ *${name}* sacado del seguimiento de asistencia.` });
 });
 
@@ -421,10 +422,28 @@ app.view('modal_admin_agregar', async ({ view, ack, body, client }) => {
   if (!db.isAdmin(adminId)) return;
   const targetId = view.state.values.blk_user.sel_user.selected_user;
   if (!targetId) return;
-  db.upsertUser({ slack_id: targetId, name: targetId, real_name: targetId });
+
+  // Try to resolve real name — ack() is already called so no 3s timeout risk
+  let realName = targetId;
+  let userName = targetId;
+  try {
+    const info = await client.users.info({ user: targetId });
+    realName = info.user.real_name || info.user.profile?.real_name || info.user.name || targetId;
+    userName = info.user.name || targetId;
+  } catch(e) {
+    // No users:read scope — name will update on first /marcar by that user
+    console.log(`[admin] Sin scope users:read, guardando ${targetId} como nombre temporal`);
+  }
+
+  // Only overwrite if we have a real name (don't stomp an existing name with the ID)
+  const existing = db.getUser(targetId);
+  if (!existing || realName !== targetId) {
+    db.upsertUser({ slack_id: targetId, name: userName, real_name: realName });
+  }
   db.setTracked(1, targetId);
-  const name = db.getUser(targetId)?.real_name || targetId;
-  await client.chat.postMessage({ channel: adminId, text: `✅ *${name}* agregado al seguimiento de asistencia.` });
+
+  const display = realName !== targetId ? realName : `<@${targetId}>`;
+  await client.chat.postMessage({ channel: adminId, text: `✅ *${display}* agregado al seguimiento de asistencia.` });
 });
 
 // ═══════════════════════════════════════════════════════════════════
