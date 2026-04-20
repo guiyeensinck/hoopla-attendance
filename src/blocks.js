@@ -146,6 +146,15 @@ const buildPresenceSummaryReport = (data, s, e) => {
 
 // ─── Quick-action reminder blocks (with buttons) ──────────────────
 
+// Footer that appears on all reminder messages
+const REMINDER_FOOTER = {
+  type: 'context',
+  elements: [{
+    type: 'mrkdwn',
+    text: '👆 Usá el botón de arriba para registrar. *No respondas este mensaje* — la app no lee respuestas. Si necesitás hacer algo más, abrí la pestaña *Home* de la app.',
+  }],
+};
+
 const buildEntryReminderBlocks = (time) => ({
   text: `🔔 ${time} — Todavía no registraste tu entrada.`,
   blocks: [
@@ -164,6 +173,7 @@ const buildEntryReminderBlocks = (time) => ({
         },
       ],
     },
+    REMINDER_FOOTER,
   ],
 });
 
@@ -190,6 +200,7 @@ const buildLunchReminderBlocks = () => ({
         },
       ],
     },
+    REMINDER_FOOTER,
   ],
 });
 
@@ -211,6 +222,7 @@ const buildExitReminderBlocks = () => ({
         },
       ],
     },
+    REMINDER_FOOTER,
   ],
 });
 

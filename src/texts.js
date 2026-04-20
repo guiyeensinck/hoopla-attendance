@@ -111,14 +111,14 @@ module.exports = {
         'Crear es resistir. Resistir es crear. — Stéphane Hessel',
       ];
       const phrase = phrases[Math.floor(Math.random() * phrases.length)];
-      return '```\n' + HOOPLA_ASCII + '\n```\n\n_' + phrase + '_\n\n🔔 Son las 9:35 👀\n¿Te olvidaste de marcar tu entrada?\nPodés hacerlo con `/marcar`.';
+      return '```\n' + HOOPLA_ASCII + '\n```\n\n_' + phrase + '_\n\n🔔 Son las 9:35 👀\n¿Te olvidaste de marcar tu entrada?\n👆 Usá el botón del mensaje o abrí la pestaña *Home* de la app.\n\n_No respondas este mensaje — la app no lee respuestas directas._';
     },
-    entryMissingFollowUp: (time) => `🔔 *${time}* — Todavía no registraste tu entrada.\nCuando puedas, hacelo con \`/marcar\`. 👋`,
-    lunchMissing: '🍽️ Son las 14:00\n¿Te olvidaste de marcar tu almuerzo?\nPodés hacerlo con `/marcar`.',
-    exitMissing: '🔔 Son las 18:30\nTodavía no marcaste tu salida.\nPodés hacerlo con `/marcar`.\n\nSi no se registra, la jornada se cerrará automáticamente.',
-    exitAutoClosedField: '🔒 Tu jornada de hoy fue cerrada automáticamente a las 18:30.',
-    exitAutoClosedUser: (exitTime) => `🔒 Tu jornada de hoy fue cerrada automáticamente.\nSalida registrada: *${exitTime}*\nSi esto no es correcto, podés pedir que lo corrijan.`,
-    meetingOver: (time) => `📍 Tu reunión terminó a las ${time}. ¿Ya volviste? Si necesitás registrar algo, usá \`/marcar\`.`,
+    entryMissingFollowUp: (time) => `🔔 *${time}* — Todavía no registraste tu entrada.\n👆 Usá el botón del mensaje o abrí la pestaña *Home* de la app.\n\n_No respondas este mensaje — la app no lee respuestas directas._`,
+    lunchMissing: '🍽️ Son las 14:00\n¿Te olvidaste de marcar tu almuerzo?\n👆 Usá el botón del mensaje o abrí la pestaña *Home* de la app.\n\n_No respondas este mensaje — la app no lee respuestas directas._',
+    exitMissing: '🔔 Son las 18:30\nTodavía no marcaste tu salida.\n👆 Usá el botón del mensaje o abrí la pestaña *Home* de la app.\n\nSi no registrás la salida, la jornada se cerrará automáticamente.\n\n_No respondas este mensaje — la app no lee respuestas directas._',
+    exitAutoClosedField: '🔒 *Tu jornada de hoy fue cerrada automáticamente a las 18:30.*\n\nEste es un mensaje informativo. _No respondas acá_ — si tenés algún problema, hablalo con tu admin.',
+    exitAutoClosedUser: (exitTime) => `🔒 *Tu jornada de hoy fue cerrada automáticamente.*\nSalida registrada: *${exitTime}*\n\nEste es un mensaje informativo. _No respondas acá_ — si el horario no es correcto, hablalo con tu admin.`,
+    meetingOver: (time) => `📍 Tu reunión terminó a las ${time}.\n\n_Este es un mensaje informativo. Si necesitás registrar algo, abrí la pestaña *Home* de la app._`,
   },
   // ═══════════════════════════════════════════════════════════════════
   // 6. ALERTAS AL CANAL (admin)
@@ -174,7 +174,7 @@ module.exports = {
   // ═══════════════════════════════════════════════════════════════════
 
   meetings: {
-    started: (reason, time) => `📍 *Reunión registrada*\nMotivo: ${reason}\nInicio: ${time}\n\nCuando termines, escribí \`/reunion fin\`.`,
+    started: (reason, time) => `📍 *Reunión registrada*\nMotivo: ${reason}\nInicio: ${time}\n\nCuando termines, escribí \`/reunion fin\` en el DM con la app.`,
     ended: (time, duration) => `📍 *Reunión finalizada*\nHora: ${time}\nDuración: ${duration} minutos`,
     noActive: 'No tenés ninguna reunión activa.',
     alreadyInMeeting: 'Ya tenés una reunión activa. Cerrala con `/reunion fin` antes de empezar otra.',

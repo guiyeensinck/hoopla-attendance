@@ -1,7 +1,7 @@
 const t = require('./time');
 const db = require('./database');
 const texts = require('./texts');
-const { buildWeeklyReport } = require('./blocks');
+const { buildWeeklyReport, buildEntryReminderBlocks, buildLunchReminderBlocks, buildExitReminderBlocks } = require('./blocks');
 const { buildPingMessage, PING_TIMEOUT_MIN } = require('./activity');
 const { LEAVE_TYPES } = require('./leaves');
 
@@ -63,21 +63,24 @@ const setupDemo = (app) => {
 
       // ─── /demo recordatorio ────────────────────────────────────────
       if (sub === 'recordatorio') {
-        await client.chat.postMessage({ channel: userId, text: texts.reminders.entryMissing() });
+        const msg = buildEntryReminderBlocks('09:35');
+        await client.chat.postMessage({ channel: userId, ...msg });
         await safeRespond(respond, '✅ DM de recordatorio enviado. Fijate en tus mensajes directos.');
         return;
       }
 
       // ─── /demo almuerzo ────────────────────────────────────────────
       if (sub === 'almuerzo') {
-        await client.chat.postMessage({ channel: userId, text: texts.reminders.lunchMissing });
+        const msg = buildLunchReminderBlocks();
+        await client.chat.postMessage({ channel: userId, ...msg });
         await safeRespond(respond, '✅ DM de almuerzo enviado.');
         return;
       }
 
       // ─── /demo salida ──────────────────────────────────────────────
       if (sub === 'salida') {
-        await client.chat.postMessage({ channel: userId, text: texts.reminders.exitMissing });
+        const msg = buildExitReminderBlocks();
+        await client.chat.postMessage({ channel: userId, ...msg });
         await safeRespond(respond, '✅ DM de salida enviado.');
         return;
       }
