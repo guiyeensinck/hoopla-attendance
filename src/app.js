@@ -32,10 +32,11 @@ const extractUserId = (str) => {
   return m ? m[1] : (/^U[A-Z0-9]+$/.test(str) ? str : null);
 };
 
-// Extract both ID and display name from a Slack mention (<@UXXXXX|nombre>)
+// Extract both ID and display name from a Slack mention.
+// Handles: <@UXXXXX|nombre>, <@UXXXXX>, or a raw Slack ID (UXXXXX)
 const extractUserMention = (str = '') => {
-  const m = str.match(/<@([A-Z0-9]+)\|([^>]*)>/);
-  if (m) return { id: m[1], name: m[2] };
+  const m = str.match(/<@([A-Z0-9]+)(?:\|([^>]*))?>/);
+  if (m) return { id: m[1], name: m[2] || m[1] };
   if (/^U[A-Z0-9]+$/.test(str)) return { id: str, name: str };
   return null;
 };
