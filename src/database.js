@@ -99,6 +99,36 @@ try { db.exec('ALTER TABLE records ADD COLUMN last_seen TEXT'); } catch(e) {}
 try { db.exec('ALTER TABLE records ADD COLUMN auto_closed INTEGER DEFAULT 0'); } catch(e) {}
 try { db.exec('ALTER TABLE records ADD COLUMN location TEXT'); } catch(e) {}
 
+// ─── Seed holidays ─────────────────────────────────────────────────
+const HOLIDAYS_2026 = [
+  { date: '2026-05-01', label: 'Día del Trabajador' },
+  { date: '2026-05-25', label: 'Día de la Revolución de Mayo' },
+  { date: '2026-06-20', label: 'Día de la Bandera' },
+  { date: '2026-07-09', label: 'Día de la Independencia' },
+  { date: '2026-07-10', label: 'Puente turístico' },
+  { date: '2026-08-17', label: 'Paso a la Inmortalidad del Gral. San Martín' },
+  { date: '2026-10-12', label: 'Día del Respeto a la Diversidad Cultural' },
+  { date: '2026-11-20', label: 'Día de la Soberanía Nacional' },
+  { date: '2026-12-05', label: 'Día de la Publicidad' },
+  { date: '2026-12-07', label: 'Puente turístico' },
+  { date: '2026-12-08', label: 'Inmaculada Concepción de María' },
+  { date: '2026-12-24', label: 'Nochebuena' },
+  { date: '2026-12-25', label: 'Navidad' },
+  { date: '2026-12-31', label: 'Nochevieja' },
+];
+
+const _insertHoliday = db.prepare(
+  `INSERT INTO day_overrides (slack_id, date, type, reason)
+   SELECT NULL, @date, 'holiday', @label
+   WHERE NOT EXISTS (
+     SELECT 1 FROM day_overrides WHERE slack_id IS NULL AND date = @date AND type = 'holiday'
+   )`
+);
+const seedHolidays = db.transaction(() => {
+  for (const h of HOLIDAYS_2026) _insertHoliday.run(h);
+});
+seedHolidays();
+
 // ═══════════════════════════════════════════════════════════════════
 // USERS
 // ═══════════════════════════════════════════════════════════════════
