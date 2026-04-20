@@ -248,7 +248,10 @@ app.command('/admin', async ({ command, ack, respond, client }) => {
       }
       case 'agregar': case 'add': {
         const mention = extractUserMention(parts[1] || '');
-        if (!mention) { await respond({ response_type: 'ephemeral', text: '⚠️ Uso: `/admin agregar @usuario`' }); return; }
+        if (!mention) {
+          await respond({ response_type: 'ephemeral', text: `⚠️ Uso: \`/admin agregar @usuario\`\n_Debug — texto recibido: \`${command.text}\` | partes: \`${JSON.stringify(parts)}\`_` });
+          return;
+        }
         db.upsertUser({ slack_id: mention.id, name: mention.name, real_name: mention.name });
         db.setTracked(1, mention.id);
         await respond({ response_type: 'ephemeral', text: `✅ *${mention.name}* agregado al seguimiento.` });
