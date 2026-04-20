@@ -113,13 +113,14 @@ const setupDashboard = (boltApp) => {
     const user = db.getUser(slackId);
     const record = db.getOrCreateRecord(slackId, today);
     const nextAction = getNextAction(record);
+    const clientIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || '';
 
     if (!nextAction) {
       res.send(renderVerifySuccess({ user, record, action_type: null, time: null, alreadyComplete: true }));
       return;
     }
 
-    res.send(renderVerifyForm({ token, user, record, today, nextAction }));
+    res.send(renderVerifyForm({ token, user, record, today, nextAction, clientIp }));
   });
 
   // POST /verify/:token — Verify PIN + register with server time
@@ -151,15 +152,21 @@ const setupDashboard = (boltApp) => {
       return;
     }
 
+    // Validate mandatory location on entry
+    if (nextAction === 'entry_time') {
+      const loc = req.body.location;
+      if (!['agencia', 'home_office'].includes(loc)) {
+        res.send(renderVerifyError('Falta el lugar de trabajo', 'Tenés que indicar si estás en la Agencia o en Home Office para registrar tu entrada.'));
+        return;
+      }
+    }
+
     try {
       const updated = db.updateField(slackId, today, nextAction, time);
       db.updateLastSeen(slackId, today, time);
 
       if (nextAction === 'entry_time') {
-        const clientIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || '';
-        const officeIps = (process.env.OFFICE_IP || '').split(',').map(s => s.trim()).filter(Boolean);
-        const location = officeIps.length === 0 || officeIps.includes(clientIp) ? 'office' : 'remote';
-        db.setLocation(slackId, today, location);
+        db.setLocation(slackId, today, req.body.location);
       }
 
       const user = db.getUser(slackId);
@@ -276,9 +283,15 @@ const miniLayout = (title, body) => `
 </head><body><div class="verify-container">${body}</div></body></html>`;
 
 const locationBadge = (location) => {
-  if (location === 'office') return '<span class="badge office">🏢 Oficina</span>';
-  if (location === 'remote') return '<span class="badge remote">🏠 Casa</span>';
+  if (location === 'agencia' || location === 'office') return '<span class="badge office">🏢 Agencia</span>';
+  if (location === 'home_office' || location === 'remote') return '<span class="badge remote">🏠 Home Office</span>';
   return '<span style="color:var(--text-muted)">—</span>';
+};
+
+const locationIcon = (location) => {
+  if (location === 'agencia' || location === 'office') return '🏢';
+  if (location === 'home_office' || location === 'remote') return '🏠';
+  return '';
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -422,13 +435,29 @@ const STATUS_LABELS = {
   exit_time: '🔴 Salida',
 };
 
-const renderVerifyForm = ({ token, user, record, today, nextAction }) => {
+const renderVerifyForm = ({ token, user, record, today, nextAction, clientIp }) => {
   const name = user?.real_name || user?.name || 'Usuario';
   const nextLabel = STATUS_LABELS[nextAction];
 
   const statusRows = Object.entries(STATUS_LABELS).map(([field, label]) =>
     `<div class="status-row"><span>${label}</span><span>${record[field] || '—'}</span></div>`
   ).join('');
+
+  const locationSelect = nextAction === 'entry_time' ? `
+    <div class="form-group" style="margin-bottom:1.25rem;">
+      <label>¿Desde dónde trabajás hoy? <span style="color:var(--red)">*</span></label>
+      <select name="location" required style="font-size:1rem;cursor:pointer;">
+        <option value="" disabled selected>Seleccioná una opción…</option>
+        <option value="agencia">🏢 Agencia</option>
+        <option value="home_office">🏠 Home Office</option>
+      </select>
+    </div>` : '';
+
+  const ipInfo = nextAction === 'entry_time' ? `
+    <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1.25rem;padding:0.6rem 0.75rem;background:var(--surface-2);border-radius:6px;font-size:0.78rem;color:var(--text-muted);">
+      <span>📡</span>
+      <span>IP detectada: <code style="color:var(--accent-light);font-size:0.82rem;">${clientIp || 'Desconocida'}</code></span>
+    </div>` : '';
 
   return miniLayout('Registrar asistencia', `
     <div class="verify-card">
@@ -447,11 +476,12 @@ const renderVerifyForm = ({ token, user, record, today, nextAction }) => {
       </div>
 
       <form method="POST" action="/verify/${token}">
+        ${locationSelect}
+        ${ipInfo}
         <div class="form-group">
           <label>Ingresá el PIN que te apareció en Slack</label>
           <input type="text" name="pin" class="pin-input" maxlength="4" pattern="[0-9]{4}" placeholder="0000" required autocomplete="off" inputmode="numeric">
         </div>
-
         <button type="submit" class="btn-primary">✅ Registrar ${nextLabel}</button>
       </form>
     </div>`);
@@ -505,11 +535,12 @@ const renderVerifySuccess = ({ user, record, action_type, time, alreadyComplete 
 
       if (isField) comment = `🎬 Campo — ${comment}`;
       if (wasAuto) comment += ' (auto)';
+      const locIcon = locationIcon(r.location);
 
       return `<div style="display:flex;justify-content:space-between;align-items:center;padding:0.5rem 0;border-bottom:1px solid var(--border);font-size:0.85rem;">
-        <span>${statusIcon} <strong>${dayLabel}</strong> ${dateLabel}</span>
+        <span>${statusIcon} <strong>${dayLabel}</strong> <span style="color:var(--text-muted);font-size:0.78rem">${dateLabel}</span>${locIcon ? ` <span style="font-size:0.82rem;opacity:0.7" title="${r.location}">${locIcon}</span>` : ''}</span>
         <span style="color:${statusColor};font-weight:600">${hrs > 0 ? hrs + 'hs' : '—'}</span>
-        <span style="color:var(--text-muted);font-size:0.75rem;max-width:40%">${comment}</span>
+        <span style="color:var(--text-muted);font-size:0.75rem;max-width:35%">${comment}</span>
       </div>`;
     }).join('');
 
