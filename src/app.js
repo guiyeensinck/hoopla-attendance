@@ -32,6 +32,14 @@ const extractUserId = (str) => {
   return m ? m[1] : (/^U[A-Z0-9]+$/.test(str) ? str : null);
 };
 
+// Extract both ID and display name from a Slack mention (<@UXXXXX|nombre>)
+const extractUserMention = (str = '') => {
+  const m = str.match(/<@([A-Z0-9]+)\|([^>]*)>/);
+  if (m) return { id: m[1], name: m[2] };
+  if (/^U[A-Z0-9]+$/.test(str)) return { id: str, name: str };
+  return null;
+};
+
 // ─── Track last interaction for auto-close ─────────────────────────
 app.use(async ({ next, body }) => {
   try {
@@ -238,11 +246,11 @@ app.command('/admin', async ({ command, ack, respond, client }) => {
         break;
       }
       case 'agregar': case 'add': {
-        const tid = extractUserId(parts[1] || '');
-        if (!tid) { await respond({ response_type: 'ephemeral', text: '⚠️ Uso: `/admin agregar @usuario`' }); return; }
-        try { const i = await client.users.info({ user: tid }); db.upsertUser({ slack_id: tid, name: i.user.name, real_name: i.user.real_name || i.user.name }); } catch(e) { db.upsertUser({ slack_id: tid, name: tid, real_name: tid }); }
-        db.setTracked(1, tid);
-        await respond({ response_type: 'ephemeral', text: `✅ *${db.getUser(tid)?.real_name || tid}* agregado al seguimiento.` });
+        const mention = extractUserMention(parts[1] || '');
+        if (!mention) { await respond({ response_type: 'ephemeral', text: '⚠️ Uso: `/admin agregar @usuario`' }); return; }
+        db.upsertUser({ slack_id: mention.id, name: mention.name, real_name: mention.name });
+        db.setTracked(1, mention.id);
+        await respond({ response_type: 'ephemeral', text: `✅ *${mention.name}* agregado al seguimiento.` });
         break;
       }
       case 'sacar': case 'quitar': case 'remove': {
@@ -255,11 +263,11 @@ app.command('/admin', async ({ command, ack, respond, client }) => {
       case 'admin': {
         const envAdmins = (process.env.ADMIN_USER_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
         if (!envAdmins.includes(userId)) { await respond({ response_type: 'ephemeral', text: txt.errors.superOnly }); return; }
-        const tid = extractUserId(parts[1] || '');
-        if (!tid) { await respond({ response_type: 'ephemeral', text: '⚠️ Uso: `/admin admin @usuario`' }); return; }
-        try { const i = await client.users.info({ user: tid }); db.upsertUser({ slack_id: tid, name: i.user.name, real_name: i.user.real_name || i.user.name }); } catch(e) {}
-        db.setAdmin(1, tid);
-        await respond({ response_type: 'ephemeral', text: `✅ *${db.getUser(tid)?.real_name || tid}* ahora es admin.` });
+        const mention2 = extractUserMention(parts[1] || '');
+        if (!mention2) { await respond({ response_type: 'ephemeral', text: '⚠️ Uso: `/admin admin @usuario`' }); return; }
+        db.upsertUser({ slack_id: mention2.id, name: mention2.name, real_name: mention2.name });
+        db.setAdmin(1, mention2.id);
+        await respond({ response_type: 'ephemeral', text: `✅ *${mention2.name}* ahora es admin.` });
         break;
       }
       case 'feriado': {
@@ -311,6 +319,17 @@ app.command('/admin', async ({ command, ack, respond, client }) => {
         if (!ov.length) { await respond({ response_type: 'ephemeral', text: `Sin novedades para ${date}.` }); return; }
         const lines = ov.map(o => `• ${txt.overrides[o.type] || o.type}: ${o.real_name || o.name || 'Todos'}${o.reason ? ` — ${o.reason}` : ''}`).join('\n');
         await respond({ response_type: 'ephemeral', text: `📋 *Novedades ${date}:*\n${lines}` });
+        break;
+      }
+      case 'feriados': {
+        const year = parts[1] || String(new Date().getFullYear());
+        const holidays = db.getHolidays(year);
+        if (!holidays.length) {
+          await respond({ response_type: 'ephemeral', text: `📅 No hay feriados cargados para ${year}.` });
+          return;
+        }
+        const lines = holidays.map(h => `• \`${h.date}\` — ${h.reason || 'Feriado'}`).join('\n');
+        await respond({ response_type: 'ephemeral', text: `🗓️ *Feriados ${year}* (${holidays.length} días):\n\n${lines}` });
         break;
       }
       case 'actividad': case 'pings': {
@@ -369,7 +388,7 @@ app.command('/ayuda', async ({ ack, respond }) => {
       { type: 'section', text: { type: 'mrkdwn', text: '`/reporte semanal` — Resumen de horas de la semana.\n`/reporte mensual` — Resumen del mes.' } },
       { type: 'divider' },
       { type: 'section', text: { type: 'mrkdwn', text: '*👥 Gestión de usuarios (admin)*' } },
-      { type: 'section', text: { type: 'mrkdwn', text: '`/admin lista` — Ver todos los usuarios que están en el sistema y los comandos disponibles.\n`/admin agregar @usuario` — Sumá a alguien al seguimiento de asistencia.\n`/admin sacar @usuario` — Quitá a alguien del seguimiento.' } },
+      { type: 'section', text: { type: 'mrkdwn', text: '`/admin lista` — Ver todos los usuarios que están en el sistema y los comandos disponibles.\n`/admin agregar @usuario` — Sumá a alguien al seguimiento de asistencia.\n`/admin sacar @usuario` — Quitá a alguien del seguimiento.\n`/admin feriados [año]` — Ver los feriados cargados (ej: `/admin feriados 2026`).' } },
       { type: 'divider' },
       { type: 'context', elements: [{ type: 'mrkdwn', text: '_Solo vos ves este mensaje_ · ⚡ Hoopla Asistencia' }] },
     ],

@@ -109,7 +109,6 @@ const HOLIDAYS_2026 = [
   { date: '2026-08-17', label: 'Paso a la Inmortalidad del Gral. San Martín' },
   { date: '2026-10-12', label: 'Día del Respeto a la Diversidad Cultural' },
   { date: '2026-11-20', label: 'Día de la Soberanía Nacional' },
-  { date: '2026-12-05', label: 'Día de la Publicidad' },
   { date: '2026-12-07', label: 'Puente turístico' },
   { date: '2026-12-08', label: 'Inmaculada Concepción de María' },
   { date: '2026-12-24', label: 'Nochebuena' },
@@ -483,6 +482,11 @@ const countWorkdaysInRange = (startDate, endDate) => {
   return count;
 };
 
+const getHolidays = (year) =>
+  db.prepare(
+    "SELECT date, reason FROM day_overrides WHERE slack_id IS NULL AND type = 'holiday' AND date LIKE ? ORDER BY date"
+  ).all(`${year}-%`);
+
 module.exports = {
   db, upsertUser, getUser, getAllUsers, getTrackedUsers, getAdminUsers, setAdmin, setTracked, isAdmin,
   getOrCreateRecord, updateField, setWorkMode, setLocation, getRecord, updateLastSeen, autoCloseDay,
@@ -492,5 +496,5 @@ module.exports = {
   createPing, respondToPing, expirePings, getPendingPings, getTodayPingCount, getPingSummary, getPingsByDateRange,
   logPresence, getPresenceByDate, getPresenceSummary,
   startMeeting, endMeeting, getActiveMeeting, getUserMeetings, getInMeetingUsers,
-  getUserWeeklyRecords, countWorkdaysInRange, fillMissingLunch,
+  getUserWeeklyRecords, countWorkdaysInRange, fillMissingLunch, getHolidays,
 };
