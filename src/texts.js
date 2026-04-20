@@ -113,6 +113,7 @@ module.exports = {
       const phrase = phrases[Math.floor(Math.random() * phrases.length)];
       return '```\n' + HOOPLA_ASCII + '\n```\n\n_' + phrase + '_\n\n🔔 Son las 9:35 👀\n¿Te olvidaste de marcar tu entrada?\nPodés hacerlo con `/marcar`.';
     },
+    entryMissingFollowUp: (time) => `🔔 *${time}* — Todavía no registraste tu entrada.\nCuando puedas, hacelo con \`/marcar\`. 👋`,
     lunchMissing: '🍽️ Son las 14:00\n¿Te olvidaste de marcar tu almuerzo?\nPodés hacerlo con `/marcar`.',
     exitMissing: '🔔 Son las 18:30\nTodavía no marcaste tu salida.\nPodés hacerlo con `/marcar`.\n\nSi no se registra, la jornada se cerrará automáticamente.',
     exitAutoClosedField: '🔒 Tu jornada de hoy fue cerrada automáticamente a las 18:30.',

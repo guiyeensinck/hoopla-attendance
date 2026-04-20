@@ -8,6 +8,8 @@ const { runPingCycle, runPresenceCheck } = require('./activity');
 const { generateMonthlyExcel } = require('./excel');
 
 const MAX_HOURS = parseFloat(process.env.MAX_HOURS_PER_DAY || '9');
+const WORK_START_HOUR = parseInt(process.env.WORK_START_HOUR || '9', 10);
+const WORK_END_HOUR = parseInt(process.env.WORK_END_HOUR || '18', 10);
 const TZ = t.TZ;
 
 const setupScheduler = (app) => {
@@ -31,6 +33,36 @@ const setupScheduler = (app) => {
       }
       if (missing.length > 0) console.log(`[scheduler] 9:35 entry reminder → ${missing.length} personas`);
     } catch (err) { console.error('[scheduler] Error 9:35 reminder:', err); }
+  }, { timezone: TZ });
+
+  // ─── Every 30 min — Repeat entry reminder until checked in ────────
+  // Fires every 30 min during work hours (after the 9:35 reminder, until end of day)
+  cron.schedule('0,30 * * * 1-5', async () => {
+    try {
+      const now = t.now();
+      const hour = now.hour();
+      const minute = now.minute();
+
+      // Only fire after the 9:35 reminder window and before end of work day
+      // Skip 9:00 and 9:30 (before the 9:35 reminder) and anything at/after WORK_END_HOUR
+      if (hour < WORK_START_HOUR + 1) return;
+      if (hour >= WORK_END_HOUR) return;
+
+      const today = t.today();
+      if (db.isHoliday(today)) return;
+
+      const missing = db.getMissingToday(today);
+      let count = 0;
+      for (const user of missing) {
+        if (db.isUserExemptToday(user.slack_id, today)) continue;
+        await app.client.chat.postMessage({
+          channel: user.slack_id,
+          text: texts.reminders.entryMissingFollowUp(now.format('HH:mm')),
+        });
+        count++;
+      }
+      if (count > 0) console.log(`[scheduler] Recordatorio entrada ${now.format('HH:mm')} → ${count} personas`);
+    } catch (err) { console.error('[scheduler] Error recordatorio recurrente:', err); }
   }, { timezone: TZ });
 
   // ─── 10:30 — Alert to admin: who's still missing ────────────────
@@ -194,6 +226,7 @@ const setupScheduler = (app) => {
 
   console.log('[scheduler] Cron jobs configurados:');
   console.log('  → Recordatorio entrada: L-V 09:35');
+  console.log('  → Recordatorio recurrente (sin entrada): L-V cada 30 min hasta marcar');
   console.log('  → Alerta faltantes: L-V 10:30');
   console.log('  → Recordatorio almuerzo: L-V 14:00');
   console.log('  → Recordatorio salida: L-V 18:30');
