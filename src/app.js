@@ -221,108 +221,115 @@ app.command('/reporte', async ({ command, ack }) => {
 // /admin
 // ═══════════════════════════════════════════════════════════════════
 
-app.command('/admin', async ({ command, ack, client }) => {
+app.command('/admin', async ({ command, ack, respond, client }) => {
+  await ack();
+
   const userId = command.user_id;
-  if (!db.isAdmin(userId)) { await ack({ response_type: 'ephemeral', text: txt.errors.noPermission }); return; }
+  if (!db.isAdmin(userId)) { await respond({ response_type: 'ephemeral', text: txt.errors.noPermission }); return; }
 
   const parts = command.text.trim().split(/\s+/);
   const action = parts[0]?.toLowerCase();
 
-  switch (action) {
-    case 'lista': case 'list': case undefined: case '': {
-      const all = db.getAllUsers(), tracked = db.getTrackedUsers();
-      await ack({ response_type: 'ephemeral', blocks: blocks.buildAdminMenu(all, tracked.map(u => u.slack_id)) });
-      break;
+  try {
+    switch (action) {
+      case 'lista': case 'list': case undefined: case '': {
+        const all = db.getAllUsers(), tracked = db.getTrackedUsers();
+        await respond({ response_type: 'ephemeral', blocks: blocks.buildAdminMenu(all, tracked.map(u => u.slack_id)) });
+        break;
+      }
+      case 'agregar': case 'add': {
+        const tid = extractUserId(parts[1] || '');
+        if (!tid) { await respond({ response_type: 'ephemeral', text: '⚠️ Uso: `/admin agregar @usuario`' }); return; }
+        try { const i = await client.users.info({ user: tid }); db.upsertUser({ slack_id: tid, name: i.user.name, real_name: i.user.real_name || i.user.name }); } catch(e) { db.upsertUser({ slack_id: tid, name: tid, real_name: tid }); }
+        db.setTracked(1, tid);
+        await respond({ response_type: 'ephemeral', text: `✅ *${db.getUser(tid)?.real_name || tid}* agregado al seguimiento.` });
+        break;
+      }
+      case 'sacar': case 'quitar': case 'remove': {
+        const tid = extractUserId(parts[1] || '');
+        if (!tid) { await respond({ response_type: 'ephemeral', text: '⚠️ Uso: `/admin sacar @usuario`' }); return; }
+        db.setTracked(0, tid);
+        await respond({ response_type: 'ephemeral', text: `✅ *${db.getUser(tid)?.real_name || tid}* sacado del seguimiento.` });
+        break;
+      }
+      case 'admin': {
+        const envAdmins = (process.env.ADMIN_USER_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
+        if (!envAdmins.includes(userId)) { await respond({ response_type: 'ephemeral', text: txt.errors.superOnly }); return; }
+        const tid = extractUserId(parts[1] || '');
+        if (!tid) { await respond({ response_type: 'ephemeral', text: '⚠️ Uso: `/admin admin @usuario`' }); return; }
+        try { const i = await client.users.info({ user: tid }); db.upsertUser({ slack_id: tid, name: i.user.name, real_name: i.user.real_name || i.user.name }); } catch(e) {}
+        db.setAdmin(1, tid);
+        await respond({ response_type: 'ephemeral', text: `✅ *${db.getUser(tid)?.real_name || tid}* ahora es admin.` });
+        break;
+      }
+      case 'feriado': {
+        const date = parts[1], reason = parts.slice(2).join(' ') || 'Feriado';
+        if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) { await respond({ response_type: 'ephemeral', text: '⚠️ Uso: `/admin feriado YYYY-MM-DD Motivo`' }); return; }
+        db.addOverride(null, date, 'holiday', reason, userId);
+        await respond({ response_type: 'ephemeral', text: `🏖️ Feriado: *${date}* — ${reason}` });
+        break;
+      }
+      case 'vacaciones': {
+        const tid = extractUserId(parts[1] || ''), from = parts[2], to = parts[3] || parts[2];
+        if (!tid || !from) { await respond({ response_type: 'ephemeral', text: '⚠️ Uso: `/admin vacaciones @user YYYY-MM-DD YYYY-MM-DD`' }); return; }
+        let d = t.dayjs(from); const end = t.dayjs(to); let count = 0;
+        while (d.isBefore(end) || d.isSame(end, 'day')) { if (d.day() !== 0 && d.day() !== 6) { db.addOverride(tid, d.format('YYYY-MM-DD'), 'vacation', 'Vacaciones', userId); count++; } d = d.add(1, 'day'); }
+        await respond({ response_type: 'ephemeral', text: `✈️ Vacaciones: *${db.getUser(tid)?.real_name || tid}* — ${count} días (${from} a ${to})` });
+        break;
+      }
+      case 'medico': {
+        const tid = extractUserId(parts[1] || ''), date = parts[2], reason = parts.slice(3).join(' ') || 'Turno médico';
+        if (!tid || !date) { await respond({ response_type: 'ephemeral', text: '⚠️ Uso: `/admin medico @user YYYY-MM-DD Motivo`' }); return; }
+        db.addOverride(tid, date, 'medical', reason, userId);
+        await respond({ response_type: 'ephemeral', text: `🏥 Médico: *${db.getUser(tid)?.real_name || tid}* — ${date} — ${reason}` });
+        break;
+      }
+      case 'ausente': {
+        const tid = extractUserId(parts[1] || ''), date = parts[2] || t.today(), reason = parts.slice(3).join(' ') || 'Ausencia';
+        if (!tid) { await respond({ response_type: 'ephemeral', text: '⚠️ Uso: `/admin ausente @user YYYY-MM-DD Motivo`' }); return; }
+        db.addOverride(tid, date, 'absent', reason, userId);
+        await respond({ response_type: 'ephemeral', text: `❌ Ausente: *${db.getUser(tid)?.real_name || tid}* — ${date}` });
+        break;
+      }
+      case 'libre': {
+        const tid = extractUserId(parts[1] || ''), date = parts[2] || t.today(), reason = parts.slice(3).join(' ') || 'Día libre';
+        if (!tid) { await respond({ response_type: 'ephemeral', text: '⚠️ Uso: `/admin libre @user YYYY-MM-DD`' }); return; }
+        db.addOverride(tid, date, 'day_off', reason, userId);
+        await respond({ response_type: 'ephemeral', text: `📅 Libre: *${db.getUser(tid)?.real_name || tid}* — ${date}` });
+        break;
+      }
+      case 'salida': {
+        const tid = extractUserId(parts[1] || ''), date = parts[2] || t.today(), reason = parts.slice(3).join(' ') || 'Salida temprana';
+        if (!tid) { await respond({ response_type: 'ephemeral', text: '⚠️ Uso: `/admin salida @user YYYY-MM-DD Motivo`' }); return; }
+        db.addOverride(tid, date, 'early_exit', reason, userId);
+        await respond({ response_type: 'ephemeral', text: `🕐 Salida temprana: *${db.getUser(tid)?.real_name || tid}* — ${date}` });
+        break;
+      }
+      case 'novedades': {
+        const date = parts[1] || t.today();
+        const ov = db.getOverridesForDate(date);
+        if (!ov.length) { await respond({ response_type: 'ephemeral', text: `Sin novedades para ${date}.` }); return; }
+        const lines = ov.map(o => `• ${txt.overrides[o.type] || o.type}: ${o.real_name || o.name || 'Todos'}${o.reason ? ` — ${o.reason}` : ''}`).join('\n');
+        await respond({ response_type: 'ephemeral', text: `📋 *Novedades ${date}:*\n${lines}` });
+        break;
+      }
+      case 'actividad': case 'pings': {
+        const s = t.weekStart(), e = t.today();
+        await respond({ response_type: 'ephemeral', blocks: blocks.buildPingSummaryReport(db.getPingSummary(s, e), s, e) });
+        break;
+      }
+      case 'presencia': case 'presence': {
+        const s = t.weekStart(), e = t.today();
+        const data = db.getTrackedUsers().map(u => ({ ...db.getPresenceSummary(u.slack_id, s, e), name: u.name, real_name: u.real_name })).filter(p => p.total_checks > 0);
+        await respond({ response_type: 'ephemeral', blocks: blocks.buildPresenceSummaryReport(data, s, e) });
+        break;
+      }
+      default:
+        await respond({ response_type: 'ephemeral', text: txt.errors.unknownCommand });
     }
-    case 'agregar': case 'add': {
-      const tid = extractUserId(parts[1] || '');
-      if (!tid) { await ack({ response_type: 'ephemeral', text: '⚠️ `/admin agregar @usuario`' }); return; }
-      try { const i = await client.users.info({ user: tid }); db.upsertUser({ slack_id: tid, name: i.user.name, real_name: i.user.real_name || i.user.name }); } catch(e) { db.upsertUser({ slack_id: tid, name: tid, real_name: tid }); }
-      db.setTracked(1, tid);
-      await ack({ response_type: 'ephemeral', text: `✅ *${db.getUser(tid)?.real_name || tid}* agregado al tracking.` });
-      break;
-    }
-    case 'sacar': case 'quitar': case 'remove': {
-      const tid = extractUserId(parts[1] || '');
-      if (!tid) { await ack({ response_type: 'ephemeral', text: '⚠️ `/admin sacar @usuario`' }); return; }
-      db.setTracked(0, tid);
-      await ack({ response_type: 'ephemeral', text: `✅ *${db.getUser(tid)?.real_name || tid}* sacado del tracking.` });
-      break;
-    }
-    case 'admin': {
-      const envAdmins = (process.env.ADMIN_USER_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
-      if (!envAdmins.includes(userId)) { await ack({ response_type: 'ephemeral', text: txt.errors.superOnly }); return; }
-      const tid = extractUserId(parts[1] || '');
-      if (!tid) { await ack({ response_type: 'ephemeral', text: '⚠️ `/admin admin @usuario`' }); return; }
-      try { const i = await client.users.info({ user: tid }); db.upsertUser({ slack_id: tid, name: i.user.name, real_name: i.user.real_name || i.user.name }); } catch(e) {}
-      db.setAdmin(1, tid);
-      await ack({ response_type: 'ephemeral', text: `✅ *${db.getUser(tid)?.real_name || tid}* ahora es admin.` });
-      break;
-    }
-    case 'feriado': {
-      const date = parts[1], reason = parts.slice(2).join(' ') || 'Feriado';
-      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) { await ack({ response_type: 'ephemeral', text: '⚠️ `/admin feriado YYYY-MM-DD Motivo`' }); return; }
-      db.addOverride(null, date, 'holiday', reason, userId);
-      await ack({ response_type: 'ephemeral', text: `🏖️ Feriado: *${date}* — ${reason}` });
-      break;
-    }
-    case 'vacaciones': {
-      const tid = extractUserId(parts[1] || ''), from = parts[2], to = parts[3] || parts[2];
-      if (!tid || !from) { await ack({ response_type: 'ephemeral', text: '⚠️ `/admin vacaciones @user YYYY-MM-DD YYYY-MM-DD`' }); return; }
-      let d = t.dayjs(from); const end = t.dayjs(to); let count = 0;
-      while (d.isBefore(end) || d.isSame(end, 'day')) { if (d.day() !== 0 && d.day() !== 6) { db.addOverride(tid, d.format('YYYY-MM-DD'), 'vacation', 'Vacaciones', userId); count++; } d = d.add(1, 'day'); }
-      await ack({ response_type: 'ephemeral', text: `✈️ Vacaciones: *${db.getUser(tid)?.real_name || tid}* — ${count} días (${from} a ${to})` });
-      break;
-    }
-    case 'medico': {
-      const tid = extractUserId(parts[1] || ''), date = parts[2], reason = parts.slice(3).join(' ') || 'Turno médico';
-      if (!tid || !date) { await ack({ response_type: 'ephemeral', text: '⚠️ `/admin medico @user YYYY-MM-DD Motivo`' }); return; }
-      db.addOverride(tid, date, 'medical', reason, userId);
-      await ack({ response_type: 'ephemeral', text: `🏥 Médico: *${db.getUser(tid)?.real_name || tid}* — ${date} — ${reason}` });
-      break;
-    }
-    case 'ausente': {
-      const tid = extractUserId(parts[1] || ''), date = parts[2] || t.today(), reason = parts.slice(3).join(' ') || 'Ausencia';
-      if (!tid) { await ack({ response_type: 'ephemeral', text: '⚠️ `/admin ausente @user YYYY-MM-DD Motivo`' }); return; }
-      db.addOverride(tid, date, 'absent', reason, userId);
-      await ack({ response_type: 'ephemeral', text: `❌ Ausente: *${db.getUser(tid)?.real_name || tid}* — ${date}` });
-      break;
-    }
-    case 'libre': {
-      const tid = extractUserId(parts[1] || ''), date = parts[2] || t.today(), reason = parts.slice(3).join(' ') || 'Día libre';
-      if (!tid) { await ack({ response_type: 'ephemeral', text: '⚠️ `/admin libre @user YYYY-MM-DD`' }); return; }
-      db.addOverride(tid, date, 'day_off', reason, userId);
-      await ack({ response_type: 'ephemeral', text: `📅 Libre: *${db.getUser(tid)?.real_name || tid}* — ${date}` });
-      break;
-    }
-    case 'salida': {
-      const tid = extractUserId(parts[1] || ''), date = parts[2] || t.today(), reason = parts.slice(3).join(' ') || 'Salida temprana';
-      if (!tid) { await ack({ response_type: 'ephemeral', text: '⚠️ `/admin salida @user YYYY-MM-DD Motivo`' }); return; }
-      db.addOverride(tid, date, 'early_exit', reason, userId);
-      await ack({ response_type: 'ephemeral', text: `🕐 Salida temprana: *${db.getUser(tid)?.real_name || tid}* — ${date}` });
-      break;
-    }
-    case 'novedades': {
-      const date = parts[1] || t.today();
-      const ov = db.getOverridesForDate(date);
-      if (!ov.length) { await ack({ response_type: 'ephemeral', text: `Sin novedades para ${date}.` }); return; }
-      const lines = ov.map(o => `• ${txt.overrides[o.type] || o.type}: ${o.real_name || o.name || 'Todos'}${o.reason ? ` — ${o.reason}` : ''}`).join('\n');
-      await ack({ response_type: 'ephemeral', text: `📋 *Novedades ${date}:*\n${lines}` });
-      break;
-    }
-    case 'actividad': case 'pings': {
-      const s = t.weekStart(), e = t.today();
-      await ack({ response_type: 'ephemeral', blocks: blocks.buildPingSummaryReport(db.getPingSummary(s, e), s, e) });
-      break;
-    }
-    case 'presencia': case 'presence': {
-      const s = t.weekStart(), e = t.today();
-      const data = db.getTrackedUsers().map(u => ({ ...db.getPresenceSummary(u.slack_id, s, e), name: u.name, real_name: u.real_name })).filter(p => p.total_checks > 0);
-      await ack({ response_type: 'ephemeral', blocks: blocks.buildPresenceSummaryReport(data, s, e) });
-      break;
-    }
-    default:
-      await ack({ response_type: 'ephemeral', text: txt.errors.unknownCommand });
+  } catch (err) {
+    console.error('[admin] Error:', err.message);
+    try { await respond({ response_type: 'ephemeral', text: `❌ Error: ${err.message}` }); } catch(e) {}
   }
 });
 
