@@ -339,6 +339,35 @@ app.action('ping_respond', async ({ action, body, ack, client }) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// AYUDA
+// ═══════════════════════════════════════════════════════════════════
+
+app.command('/ayuda', async ({ ack, respond }) => {
+  await ack();
+  await respond({
+    response_type: 'ephemeral',
+    blocks: [
+      { type: 'header', text: { type: 'plain_text', text: '⚡ Hoopla Asistencia — Comandos' } },
+      { type: 'section', text: { type: 'mrkdwn', text: '*📋 Registro diario*' } },
+      { type: 'section', text: { type: 'mrkdwn', text: '`/marcar` — Registrá tu entrada, almuerzo o salida del día. Te manda un link con PIN para confirmar desde la compu.' } },
+      { type: 'section', text: { type: 'mrkdwn', text: '`/campo` — Declarar que hoy trabajás fuera de la oficina. Con esto podés usar `/marcar` directo desde el celu.' } },
+      { type: 'divider' },
+      { type: 'section', text: { type: 'mrkdwn', text: '*📊 Tu información*' } },
+      { type: 'section', text: { type: 'mrkdwn', text: '`/horarios` — Mirá tu estado de hoy y tu balance de horas de la semana.' } },
+      { type: 'divider' },
+      { type: 'section', text: { type: 'mrkdwn', text: '*📅 Reuniones*' } },
+      { type: 'section', text: { type: 'mrkdwn', text: '`/reunion inicio [motivo]` — Avisá que entraste a una reunión.\n`/reunion fin` — Cerrá la reunión cuando termines.' } },
+      { type: 'divider' },
+      { type: 'section', text: { type: 'mrkdwn', text: '*📈 Reportes (admin)*' } },
+      { type: 'section', text: { type: 'mrkdwn', text: '`/reporte semanal` — Resumen de horas de la semana.\n`/reporte mensual` — Resumen del mes.' } },
+      { type: 'section', text: { type: 'mrkdwn', text: '`/admin lista` — Ver todos los comandos de administración.' } },
+      { type: 'divider' },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: '_Solo vos ves este mensaje_ · ⚡ Hoopla Asistencia' }] },
+    ],
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // EVENTS
 // ═══════════════════════════════════════════════════════════════════
 
