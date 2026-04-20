@@ -4,6 +4,7 @@ const dayjs = t.dayjs;
 const db = require('./database');
 const verify = require('./verification');
 const { getNextAction } = require('./blocks');
+const { LEAVE_TYPES } = require('./leaves');
 
 const dashboardAuth = (req, res, next) => {
   const token = process.env.DASHBOARD_TOKEN;
@@ -81,6 +82,17 @@ const setupDashboard = (boltApp) => {
     const startDate = from || t.weekStart();
     const endDate = to || t.today();
     res.json({ summary: db.getWeeklySummary(startDate, endDate), startDate, endDate });
+  });
+
+  // ─── Ausencias ───────────────────────────────────────────────────
+  router.get('/ausencias', (req, res) => {
+    const from = req.query.from || dayjs().subtract(30, 'day').format('YYYY-MM-DD');
+    const to   = req.query.to   || dayjs().add(60, 'day').format('YYYY-MM-DD');
+    const status = req.query.status || '';
+    let records = db.getAllLeaveRequests(from, to);
+    if (status) records = records.filter(r => r.status === status);
+    const pending = records.filter(r => r.status === 'pending').length;
+    res.send(renderAusencias({ records, from, to, status, pending }));
   });
 
   boltApp.receiver.app.use('/dashboard', router);
@@ -218,6 +230,9 @@ const STYLES = `
   .badge.tracked { background: rgba(0,184,148,0.15); color: var(--green); }
   .badge.office { background: rgba(0,184,148,0.15); color: var(--green); }
   .badge.remote { background: rgba(253,203,110,0.15); color: var(--yellow); }
+  .badge.pending  { background: rgba(253,203,110,0.15); color: var(--yellow); }
+  .badge.approved { background: rgba(0,184,148,0.15); color: var(--green); }
+  .badge.rejected { background: rgba(255,107,107,0.15); color: var(--red); }
   .filters { display: flex; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap; align-items: end; }
   .filters label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); display: block; margin-bottom: 0.25rem; }
   .filters input, .filters select { background: var(--surface); border: 1px solid var(--border); color: var(--text); padding: 0.5rem 0.75rem; border-radius: 4px; font-family: inherit; font-size: 0.85rem; }
@@ -269,6 +284,7 @@ const layout = (title, nav, body) => `
       <a href="/dashboard/records" class="${nav === 'records' ? 'active' : ''}">Registros</a>
       <a href="/dashboard/activity" class="${nav === 'activity' ? 'active' : ''}">Actividad</a>
       <a href="/dashboard/users" class="${nav === 'users' ? 'active' : ''}">Usuarios</a>
+      <a href="/dashboard/ausencias" class="${nav === 'ausencias' ? 'active' : ''}">Ausencias</a>
     </nav>
   </header>
   ${body}
@@ -607,6 +623,63 @@ const renderVerifySuccess = ({ user, record, action_type, time, alreadyComplete 
     </div>
     <div class="verify-card" style="margin-top:1rem">${statusRows}</div>
     ${weeklyHtml}`);
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// AUSENCIAS PAGE
+// ═══════════════════════════════════════════════════════════════════
+
+const renderAusencias = ({ records, from, to, status, pending }) => {
+  const statusLabel = { pending: '⏳ Pendiente', approved: '✅ Aprobada', rejected: '❌ Rechazada' };
+  const statusBadge = (s) => `<span class="badge ${s}">${statusLabel[s] || s}</span>`;
+
+  const rows = records.map(r => {
+    const ti = LEAVE_TYPES[r.type] || { emoji: '📋', label: r.type };
+    const name = r.real_name || r.name || r.slack_id;
+    const period = r.date_from === r.date_to
+      ? dayjs(r.date_from).format('DD/MM/YYYY')
+      : `${dayjs(r.date_from).format('DD/MM')} → ${dayjs(r.date_to).format('DD/MM')}`;
+    const reviewer = r.reviewer_real_name || r.reviewer_name || '';
+    return `<tr>
+      <td>${name}</td>
+      <td>${ti.emoji} ${ti.label}</td>
+      <td>${period}</td>
+      <td style="max-width:200px;color:var(--text-muted);font-size:0.8rem">${r.notes || '—'}</td>
+      <td>${statusBadge(r.status)}</td>
+      <td style="font-size:0.8rem;color:var(--text-muted)">${reviewer || '—'}</td>
+      <td style="font-size:0.75rem;color:var(--text-muted)">${r.reject_reason || '—'}</td>
+      <td style="font-size:0.75rem;color:var(--text-muted)">${dayjs(r.created_at).format('DD/MM/YYYY HH:mm')}</td>
+    </tr>`;
+  }).join('');
+
+  return layout('Ausencias', 'ausencias', `
+    ${pending > 0 ? `<div style="margin-bottom:1.5rem;padding:0.75rem 1rem;background:rgba(253,203,110,0.1);border:1px solid var(--yellow);border-radius:8px;font-size:0.9rem;">
+      ⏳ Hay <strong>${pending}</strong> solicitud${pending !== 1 ? 'es' : ''} pendiente${pending !== 1 ? 's' : ''} de revisión.
+      Las aprobaciones se hacen desde el DM de Slack o con <code>/admin ausencias</code>.
+    </div>` : ''}
+
+    <form class="filters" method="GET" action="/dashboard/ausencias">
+      <div><label>Desde</label><input type="date" name="from" value="${from}"></div>
+      <div><label>Hasta</label><input type="date" name="to" value="${to}"></div>
+      <div><label>Estado</label>
+        <select name="status">
+          <option value="" ${!status ? 'selected' : ''}>Todos</option>
+          <option value="pending"  ${status === 'pending'  ? 'selected' : ''}>⏳ Pendientes</option>
+          <option value="approved" ${status === 'approved' ? 'selected' : ''}>✅ Aprobadas</option>
+          <option value="rejected" ${status === 'rejected' ? 'selected' : ''}>❌ Rechazadas</option>
+        </select>
+      </div>
+      <button type="submit">Filtrar</button>
+    </form>
+
+    <div class="card">
+      <h3>Solicitudes de ausencia</h3>
+      ${records.length > 0 ? `<table><thead><tr>
+        <th>Persona</th><th>Tipo</th><th>Período</th><th>Nota</th><th>Estado</th><th>Revisado por</th><th>Motivo rechazo</th><th>Solicitado</th>
+      </tr></thead><tbody>${rows}</tbody></table>`
+      : `<p class="empty">No hay solicitudes para el período seleccionado.</p>`}
+    </div>
+  `);
 };
 
 module.exports = { setupDashboard };

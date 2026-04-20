@@ -91,6 +91,34 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_meetings_slack ON meetings(slack_id);
 `);
 
+// ─── Leave request tables ───────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS leave_requests (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    slack_id      TEXT NOT NULL,
+    type          TEXT NOT NULL,
+    date_from     TEXT NOT NULL,
+    date_to       TEXT NOT NULL,
+    notes         TEXT,
+    status        TEXT DEFAULT 'pending',
+    reviewed_by   TEXT,
+    reviewed_at   TEXT,
+    reject_reason TEXT,
+    created_at    TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (slack_id) REFERENCES users(slack_id)
+  );
+  CREATE TABLE IF NOT EXISTS leave_admin_notifications (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id  INTEGER NOT NULL,
+    slack_id    TEXT NOT NULL,
+    channel_id  TEXT NOT NULL,
+    message_ts  TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_leaves_slack  ON leave_requests(slack_id);
+  CREATE INDEX IF NOT EXISTS idx_leaves_status ON leave_requests(status);
+  CREATE INDEX IF NOT EXISTS idx_leaves_date   ON leave_requests(date_from);
+`);
+
 // Migrations
 try { db.exec('ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0'); } catch(e) {}
 try { db.exec('ALTER TABLE users ADD COLUMN is_tracked INTEGER DEFAULT 0'); } catch(e) {}
@@ -487,6 +515,53 @@ const getHolidays = (year) =>
     "SELECT date, reason FROM day_overrides WHERE slack_id IS NULL AND type = 'holiday' AND date LIKE ? ORDER BY date"
   ).all(`${year}-%`);
 
+// ═══════════════════════════════════════════════════════════════════
+// LEAVE REQUESTS
+// ═══════════════════════════════════════════════════════════════════
+const createLeaveRequest = (slackId, type, dateFrom, dateTo, notes) => {
+  const r = db.prepare(
+    `INSERT INTO leave_requests (slack_id, type, date_from, date_to, notes) VALUES (?, ?, ?, ?, ?)`
+  ).run(slackId, type, dateFrom, dateTo, notes || null);
+  return r.lastInsertRowid;
+};
+
+const getLeaveRequest = (id) =>
+  db.prepare(`SELECT lr.*, u.name, u.real_name FROM leave_requests lr
+    LEFT JOIN users u ON u.slack_id = lr.slack_id WHERE lr.id = ?`).get(id);
+
+const approveLeaveRequest = (id, reviewerId) =>
+  db.prepare(`UPDATE leave_requests SET status='approved', reviewed_by=?, reviewed_at=datetime('now') WHERE id=?`)
+    .run(reviewerId, id);
+
+const rejectLeaveRequest = (id, reviewerId, reason) =>
+  db.prepare(`UPDATE leave_requests SET status='rejected', reviewed_by=?, reviewed_at=datetime('now'), reject_reason=? WHERE id=?`)
+    .run(reviewerId, reason || null, id);
+
+const getPendingLeaveRequests = () =>
+  db.prepare(`SELECT lr.*, u.name, u.real_name FROM leave_requests lr
+    LEFT JOIN users u ON u.slack_id = lr.slack_id
+    WHERE lr.status = 'pending' ORDER BY lr.created_at ASC`).all();
+
+const getAllLeaveRequests = (from, to) =>
+  db.prepare(`SELECT lr.*, u.name, u.real_name,
+    rv.name AS reviewer_name, rv.real_name AS reviewer_real_name
+    FROM leave_requests lr
+    LEFT JOIN users u  ON u.slack_id  = lr.slack_id
+    LEFT JOIN users rv ON rv.slack_id = lr.reviewed_by
+    WHERE lr.date_from BETWEEN ? AND ? ORDER BY lr.created_at DESC`)
+    .all(from, to);
+
+const getUserLeaveRequests = (slackId, limit = 10) =>
+  db.prepare(`SELECT * FROM leave_requests WHERE slack_id = ? ORDER BY created_at DESC LIMIT ?`)
+    .all(slackId, limit);
+
+const addLeaveAdminNotification = (requestId, slackId, channelId, messageTs) =>
+  db.prepare(`INSERT INTO leave_admin_notifications (request_id, slack_id, channel_id, message_ts) VALUES (?,?,?,?)`)
+    .run(requestId, slackId, channelId, messageTs);
+
+const getLeaveAdminNotifications = (requestId) =>
+  db.prepare(`SELECT * FROM leave_admin_notifications WHERE request_id = ?`).all(requestId);
+
 module.exports = {
   db, upsertUser, getUser, getAllUsers, getTrackedUsers, getAdminUsers, setAdmin, setTracked, isAdmin,
   getOrCreateRecord, updateField, setWorkMode, setLocation, getRecord, updateLastSeen, autoCloseDay,
@@ -497,4 +572,7 @@ module.exports = {
   logPresence, getPresenceByDate, getPresenceSummary,
   startMeeting, endMeeting, getActiveMeeting, getUserMeetings, getInMeetingUsers,
   getUserWeeklyRecords, countWorkdaysInRange, fillMissingLunch, getHolidays,
+  createLeaveRequest, getLeaveRequest, approveLeaveRequest, rejectLeaveRequest,
+  getPendingLeaveRequests, getAllLeaveRequests, getUserLeaveRequests,
+  addLeaveAdminNotification, getLeaveAdminNotifications,
 };

@@ -7,6 +7,7 @@ const txt = require('./texts');
 const { setupScheduler } = require('./scheduler');
 const { setupDashboard } = require('./dashboard');
 const { setupDemo } = require('./demo');
+const { setupLeaves, LEAVE_TYPES } = require('./leaves');
 const { createToken } = require('./verification');
 
 const EXPECTED_HOURS = parseFloat(process.env.EXPECTED_HOURS_PER_DAY || '8');
@@ -357,6 +358,21 @@ app.command('/admin', async ({ command, ack, respond, client }) => {
         await respond({ response_type: 'ephemeral', text: `📋 *Novedades ${date}:*\n${lines}` });
         break;
       }
+      case 'ausencias': {
+        const pending = db.getPendingLeaveRequests();
+        if (!pending.length) {
+          await respond({ response_type: 'ephemeral', text: '✅ No hay solicitudes de ausencia pendientes.' });
+          return;
+        }
+        const lines = pending.map(r => {
+          const ti = LEAVE_TYPES[r.type] || { emoji: '📋', label: r.type };
+          const name = r.real_name || r.name || r.slack_id;
+          const from = r.date_from === r.date_to ? r.date_from : `${r.date_from} → ${r.date_to}`;
+          return `• *${name}* — ${ti.emoji} ${ti.label} | ${from}${r.notes ? ` | _${r.notes}_` : ''} | #${r.id}`;
+        }).join('\n');
+        await respond({ response_type: 'ephemeral', text: `📋 *Solicitudes pendientes (${pending.length}):*\n\n${lines}\n\nRevisalas desde el DM que te mandó la app o en /dashboard/ausencias` });
+        break;
+      }
       case 'feriados': {
         const year = parts[1] || String(new Date().getFullYear());
         const holidays = db.getHolidays(year);
@@ -456,6 +472,9 @@ app.command('/ayuda', async ({ ack, respond }) => {
     response_type: 'ephemeral',
     blocks: [
       { type: 'header', text: { type: 'plain_text', text: '⚡ Hoopla Asistencia — Comandos' } },
+      { type: 'section', text: { type: 'mrkdwn', text: '*🙋 Ausencias y licencias*' } },
+      { type: 'section', text: { type: 'mrkdwn', text: '`/pedir` — Solicitá vacaciones, día libre, examen, medio día, médico u otra ausencia. La solicitud queda pendiente hasta que un admin la apruebe o rechace.' } },
+      { type: 'divider' },
       { type: 'section', text: { type: 'mrkdwn', text: '*📋 Registro diario*' } },
       { type: 'section', text: { type: 'mrkdwn', text: '`/marcar` — Registrá tu entrada, almuerzo o salida del día. Te manda un link con PIN para confirmar desde la compu.' } },
       { type: 'section', text: { type: 'mrkdwn', text: '`/campo` — Declarar que hoy trabajás fuera de la oficina. Con esto podés usar `/marcar` directo desde el celu.' } },
@@ -470,7 +489,7 @@ app.command('/ayuda', async ({ ack, respond }) => {
       { type: 'section', text: { type: 'mrkdwn', text: '`/reporte semanal` — Resumen de horas de la semana.\n`/reporte mensual` — Resumen del mes.' } },
       { type: 'divider' },
       { type: 'section', text: { type: 'mrkdwn', text: '*👥 Gestión de usuarios (admin)*' } },
-      { type: 'section', text: { type: 'mrkdwn', text: '`/admin lista` — Ver todos los usuarios que están en el sistema y los comandos disponibles.\n`/admin agregar @usuario` — Sumá a alguien al seguimiento de asistencia.\n`/admin sacar @usuario` — Quitá a alguien del seguimiento.\n`/admin feriados [año]` — Ver los feriados cargados (ej: `/admin feriados 2026`).' } },
+      { type: 'section', text: { type: 'mrkdwn', text: '`/admin lista` — Ver todos los usuarios.\n`/admin agregar @usuario` — Sumá a alguien al seguimiento.\n`/admin sacar @usuario` — Quitá a alguien del seguimiento.\n`/admin ausencias` — Ver solicitudes de ausencia pendientes.\n`/admin feriados [año]` — Ver los feriados cargados.' } },
       { type: 'divider' },
       { type: 'context', elements: [{ type: 'mrkdwn', text: '_Solo vos ves este mensaje_ · ⚡ Hoopla Asistencia' }] },
     ],
@@ -506,6 +525,7 @@ app.event('team_join', async ({ event }) => {
   const PORT = process.env.PORT || 3000;
   setupDashboard(app);
   setupScheduler(app);
+  setupLeaves(app);
   setupDemo(app);
   await app.start(PORT);
   console.log(`\n  ⚡ Hoopla Asistencia running — port ${PORT}\n  → Dashboard: http://localhost:${PORT}/dashboard`);
