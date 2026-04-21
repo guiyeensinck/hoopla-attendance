@@ -9,30 +9,7 @@ const { runPingCycle, runPresenceCheck } = require('./activity');
 const { generateMonthlyExcel } = require('./excel');
 
 const MAX_HOURS = parseFloat(process.env.MAX_HOURS_PER_DAY || '9');
-const WORK_START_HOUR = parseInt(process.env.WORK_START_HOUR || '9', 10);
-const WORK_END_HOUR = parseInt(process.env.WORK_END_HOUR || '18', 10);
 const TZ = t.TZ;
-
-// ─── Reusable entry reminder check ──────────────────────────────────
-const runEntryReminderCheck = async (app) => {
-  const now = t.now();
-  const hour = now.hour();
-  if (now.day() === 0 || now.day() === 6) return 0;
-  if (hour < WORK_START_HOUR + 1 || hour >= WORK_END_HOUR) return 0;
-  const today = t.today();
-  if (db.isHoliday(today)) return 0;
-
-  const missing = db.getMissingToday(today);
-  let count = 0;
-  for (const user of missing) {
-    if (db.isUserExemptToday(user.slack_id, today)) continue;
-    const msg = buildEntryReminderBlocks(now.format('HH:mm'));
-    await app.client.chat.postMessage({ channel: user.slack_id, ...msg });
-    count++;
-  }
-  if (count > 0) console.log(`[scheduler] Recordatorio entrada ${now.format('HH:mm')} → ${count} personas`);
-  return count;
-};
 
 const setupScheduler = (app) => {
   const REPORT_CHANNEL = process.env.REPORT_CHANNEL || '#asistencia';
@@ -40,33 +17,38 @@ const setupScheduler = (app) => {
   const SOLO_USER_ID = process.env.SOLO_USER_ID || '';
   const target = () => SOLO_MODE ? SOLO_USER_ID : REPORT_CHANNEL;
 
-  // ─── 9:35 — Initial reminder for missing entry ──────────────────
+  // ─── Recordatorios de entrada ──────────────────────────────────
+  // - 09:35 inicial
+  // - Cada 30 min entre 10:00 y 12:30 si todavía no marcó
+  // - Después de 12:30 se corta (si no vino, no vino — el alert al admin
+  //   de las 10:30 ya cubre ese caso)
+  // NOTA: no hay reminder al arranque del server — eso generaba spam en
+  // cada redeploy de Railway.
+  const sendEntryReminders = async (timeLabel) => {
+    const today = t.today();
+    if (db.isHoliday(today)) return;
+    const missing = db.getMissingToday(today);
+    let count = 0;
+    for (const user of missing) {
+      if (db.isUserExemptToday(user.slack_id, today)) continue;
+      const msg = buildEntryReminderBlocks(timeLabel);
+      await app.client.chat.postMessage({ channel: user.slack_id, ...msg });
+      count++;
+    }
+    if (count > 0) console.log(`[scheduler] ${timeLabel} entry reminder → ${count} personas`);
+  };
+
+  // 09:35 inicial
   cron.schedule('35 9 * * 1-5', async () => {
-    try {
-      const today = t.today();
-      if (db.isHoliday(today)) return;
-      const missing = db.getMissingToday(today);
-      for (const user of missing) {
-        if (db.isUserExemptToday(user.slack_id, today)) continue;
-        const msg = buildEntryReminderBlocks('09:35');
-        await app.client.chat.postMessage({ channel: user.slack_id, ...msg });
-      }
-      if (missing.length > 0) console.log(`[scheduler] 9:35 entry reminder → ${missing.length} personas`);
-    } catch (err) { console.error('[scheduler] Error 9:35 reminder:', err); }
+    try { await sendEntryReminders('09:35'); }
+    catch (err) { console.error('[scheduler] Error 9:35 reminder:', err); }
   }, { timezone: TZ });
 
-  // ─── Every 30 min — Repeat reminder until checked in ─────────────
-  cron.schedule('0,30 * * * 1-5', async () => {
-    try { await runEntryReminderCheck(app); }
-    catch (err) { console.error('[scheduler] Error recordatorio recurrente:', err); }
+  // 10:00, 10:30, 11:00, 11:30, 12:00, 12:30 — seguimiento (6 tiros max)
+  cron.schedule('0,30 10,11,12 * * 1-5', async () => {
+    try { await sendEntryReminders(t.now().format('HH:mm')); }
+    catch (err) { console.error('[scheduler] Error recurring reminder:', err); }
   }, { timezone: TZ });
-
-  // ─── Immediate check on startup ──────────────────────────────────
-  // Fires 15s after boot so if it's already past 10am someone gets reminded right away
-  setTimeout(async () => {
-    try { await runEntryReminderCheck(app); }
-    catch(e) { console.error('[scheduler] Startup reminder error:', e.message); }
-  }, 15000);
 
   // ─── 10:30 — Alert to admin: who's still missing ────────────────
   cron.schedule('30 10 * * 1-5', async () => {
@@ -82,8 +64,8 @@ const setupScheduler = (app) => {
     } catch (err) { console.error('[scheduler] Error 10:30:', err); }
   }, { timezone: TZ });
 
-  // ─── 14:00 — Lunch reminder to individuals ──────────────────────
-  cron.schedule('0 14 * * 1-5', async () => {
+  // ─── 13:00 — Lunch reminder to individuals ──────────────────────
+  cron.schedule('0 13 * * 1-5', async () => {
     try {
       const today = t.today();
       if (db.isHoliday(today)) return;
@@ -94,24 +76,52 @@ const setupScheduler = (app) => {
         const msg = buildLunchReminderBlocks();
         await app.client.chat.postMessage({ channel: r.slack_id, ...msg });
       }
-      if (noLunch.length > 0) console.log(`[scheduler] 14:00 lunch reminder → ${noLunch.length}`);
-    } catch (err) { console.error('[scheduler] Error 14:00:', err); }
+      if (noLunch.length > 0) console.log(`[scheduler] 13:00 lunch reminder → ${noLunch.length}`);
+    } catch (err) { console.error('[scheduler] Error 13:00:', err); }
   }, { timezone: TZ });
 
-  // ─── 18:30 — Exit reminder to office workers ────────────────────
+  // ─── 16:00 — Auto-cierre del almuerzo si el usuario se olvidó ────
+  // Si ya son las 16:00 y el usuario no cerró el almuerzo, lo rellenamos
+  // con 1 hora (13:00-14:00) y le avisamos. Es solo un fallback; la idea
+  // es que el usuario lo haga.
+  cron.schedule('0 16 * * 1-5', async () => {
+    try {
+      const today = t.today();
+      if (db.isHoliday(today)) return;
+      const pending = db.getLunchNotClosed(today);
+      let count = 0;
+      for (const r of pending) {
+        if (db.isUserExemptToday(r.slack_id, today)) continue;
+        if (db.isFieldDay(r.slack_id, today)) continue;
+        db.fillMissingLunch(r.slack_id, today, r);
+        await app.client.chat.postMessage({
+          channel: r.slack_id,
+          text: texts.reminders.lunchAutoClosed,
+        });
+        count++;
+      }
+      if (count > 0) console.log(`[scheduler] 16:00 lunch auto-close → ${count} personas`);
+    } catch (err) { console.error('[scheduler] Error 16:00:', err); }
+  }, { timezone: TZ });
+
+  // ─── 18:30 — Exit handling ──────────────────────────────────────
+  // - Campo/reunión: cierre automático inmediato a las 18:30
+  // - Oficina CON pings respondidos hoy: cierre automático usando el
+  //   último ping como hora de salida (mensaje claro de que es fallback)
+  // - Oficina SIN pings respondidos: recordatorio con botón (todavía
+  //   tiene hasta 20:30 para cerrar manual)
   cron.schedule('30 18 * * 1-5', async () => {
     try {
       const today = t.today();
       if (db.isHoliday(today)) return;
 
-      // Auto-close field and meeting users immediately at 18:30
       const incomplete = db.getIncompleteToday(today);
       for (const r of incomplete) {
         const isField = r.work_mode === 'field' || db.isFieldDay(r.slack_id, today);
         const hasMeeting = db.getActiveMeeting(r.slack_id, today);
 
         if (isField || hasMeeting) {
-          // Auto-close now
+          // Auto-close field/meeting users at 18:30
           if (hasMeeting) db.endMeeting(hasMeeting.id, '18:30');
           db.fillMissingLunch(r.slack_id, today, r);
           db.updateField(r.slack_id, today, 'exit_time', '18:30');
@@ -120,8 +130,23 @@ const setupScheduler = (app) => {
             text: texts.reminders.exitAutoClosedField,
           });
           console.log(`[scheduler] Auto-closed field/meeting: ${r.real_name || r.name}`);
+          continue;
+        }
+
+        // Office worker — try to close with last responded ping time
+        const lastPing = db.getLastRespondedPingTime(r.slack_id, today);
+        if (lastPing) {
+          const exitHM = lastPing.substring(0, 5); // HH:MM from HH:MM:SS
+          const missed = db.getMissedPingCount(r.slack_id, today);
+          db.fillMissingLunch(r.slack_id, today, r);
+          db.updateField(r.slack_id, today, 'exit_time', exitHM);
+          await app.client.chat.postMessage({
+            channel: r.slack_id,
+            text: texts.reminders.exitAutoClosedByPing(exitHM, missed),
+          });
+          console.log(`[scheduler] 18:30 auto-close by last ping: ${r.real_name || r.name} → ${exitHM}`);
         } else {
-          // Office worker — send reminder with button
+          // No ping answered — send reminder with button (still has until 20:30)
           const msg = buildExitReminderBlocks();
           await app.client.chat.postMessage({ channel: r.slack_id, ...msg });
         }
@@ -129,7 +154,9 @@ const setupScheduler = (app) => {
     } catch (err) { console.error('[scheduler] Error 18:30:', err); }
   }, { timezone: TZ });
 
-  // ─── 20:30 — Auto-close everyone still open ────────────────────
+  // ─── 20:30 — Auto-close anyone still open ────────────────────
+  // Último fallback: si a las 20:30 no cerraron ni hay ping que usar,
+  // se cierra en 18:30 (horario estándar).
   cron.schedule('30 20 * * 1-5', async () => {
     try {
       const today = t.today();
@@ -223,17 +250,17 @@ const setupScheduler = (app) => {
   }, { timezone: TZ });
 
   console.log('[scheduler] Cron jobs configurados:');
-  console.log('  → Recordatorio entrada: L-V 09:35');
-  console.log('  → Recordatorio recurrente (sin entrada): L-V cada 30 min hasta marcar');
-  console.log('  → Alerta faltantes: L-V 10:30');
-  console.log('  → Recordatorio almuerzo: L-V 14:00');
-  console.log('  → Recordatorio salida: L-V 18:30');
+  console.log('  → Recordatorio entrada: L-V 09:35 + 10:00/10:30/11:00/11:30/12:00/12:30 si falta');
+  console.log('  → Alerta faltantes al admin: L-V 10:30');
+  console.log('  → Recordatorio almuerzo: L-V 13:00');
+  console.log('  → Auto-cierre almuerzo (1h fallback): L-V 16:00');
+  console.log('  → Pings actividad: 4/día (2 AM ~10:30/12:00 + 2 PM ~15:30/18:00 ±5min) L-V');
+  console.log('  → Cierre oficina (último ping / botón): L-V 18:30');
   console.log('  → Auto-cierre campo/reunión: L-V 18:30');
-  console.log('  → Auto-cierre general: L-V 20:30');
+  console.log('  → Auto-cierre general final: L-V 20:30');
   console.log('  → Resumen diario: L-V 19:00');
   console.log('  → Reporte semanal: Viernes 18:00');
   console.log('  → Reporte mensual + Excel: 1ro 09:00');
-  console.log('  → Pings actividad: cada minuto L-V');
   console.log('  → Presencia Slack: cada 30 min L-V');
 };
 

@@ -2,55 +2,50 @@ const t = require('./time');
 const db = require('./database');
 
 // ─── Config ────────────────────────────────────────────────────────
-const PINGS_PER_DAY = parseInt(process.env.PINGS_PER_DAY || '3', 10);
 const PING_TIMEOUT_MIN = parseInt(process.env.PING_TIMEOUT_MIN || '10', 10);
 const WORK_START_HOUR = parseInt(process.env.WORK_START_HOUR || '9', 10);
 const WORK_END_HOUR = parseInt(process.env.WORK_END_HOUR || '18', 10);
 
+// 4 pings por día: 2 a la mañana + 2 a la tarde. Los de la tarde marcan "última
+// actividad" y se usan como hora de salida fallback si el usuario no cierra el día.
+// Cada ping se dispara a la hora base ± PING_JITTER_MIN, random por usuario/día.
+//
+// Diseño: 98% del equipo trabaja hasta las 18:20 como máximo. El último ping a las
+// ~18:00 captura la salida con error <= 20 min para la gran mayoría.
+const PING_SLOTS = [
+  { name: 'morning_1',   hour: 10, minute: 30, role: 'activity' },  // ~10:30 — ya arrancaron
+  { name: 'morning_2',   hour: 12, minute: 0,  role: 'activity' },  // ~12:00 — pre-almuerzo
+  { name: 'afternoon_1', hour: 15, minute: 30, role: 'exit'     },  // ~15:30 — post-almuerzo
+  { name: 'afternoon_2', hour: 18, minute: 0,  role: 'exit'     },  // ~18:00 — captura salida
+];
+const PINGS_PER_DAY = PING_SLOTS.length;
+const PING_JITTER_MIN = 5;
+
 // ─── Track scheduled pings per user per day ────────────────────────
-// Map<`${slackId}-${date}`, Set<scheduledMinute>>
+// Map<`${slackId}-${date}`, [{ name, minute, fired }]>
 const scheduledPings = new Map();
 
-/**
- * Schedule random ping times for a user for today.
- * Returns array of minute-of-day values when pings should fire.
- */
+/** Schedule the 4 daily pings with random jitter for a user. */
 const schedulePingsForUser = (slackId, date) => {
   const key = `${slackId}-${date}`;
-  if (scheduledPings.has(key)) return [...scheduledPings.get(key)];
+  if (scheduledPings.has(key)) return scheduledPings.get(key);
 
-  const startMin = WORK_START_HOUR * 60 + 30;  // 30 min after start
-  const endMin = WORK_END_HOUR * 60 - 30;      // 30 min before end
-  const range = endMin - startMin;
+  const slots = PING_SLOTS.map(s => {
+    const base = s.hour * 60 + s.minute;
+    const jitter = Math.floor(Math.random() * (PING_JITTER_MIN * 2 + 1)) - PING_JITTER_MIN;
+    return { name: s.name, role: s.role, minute: base + jitter, fired: false };
+  });
 
-  const times = new Set();
-  let attempts = 0;
-  while (times.size < PINGS_PER_DAY && attempts < 50) {
-    const minute = startMin + Math.floor(Math.random() * range);
-    // Ensure at least 45 min between pings
-    const tooClose = [...times].some(t => Math.abs(t - minute) < 45);
-    if (!tooClose) times.add(minute);
-    attempts++;
-  }
-
-  scheduledPings.set(key, times);
-  return [...times].sort((a, b) => a - b);
+  scheduledPings.set(key, slots);
+  return slots;
 };
 
-/**
- * Check if current minute matches any scheduled ping for the user.
- */
+/** Find the next slot that should fire now (gives 2-min window to catch late crons). */
 const shouldPingNow = (slackId, date, currentMinute) => {
-  const key = `${slackId}-${date}`;
-  const times = scheduledPings.get(key);
-  if (!times) return false;
-  // Allow ±1 minute tolerance
-  for (const t of times) {
-    if (Math.abs(currentMinute - t) <= 1) {
-      times.delete(t); // Don't fire same time twice
-      return true;
-    }
-  }
+  const slots = scheduledPings.get(`${slackId}-${date}`);
+  if (!slots) return false;
+  const slot = slots.find(s => !s.fired && currentMinute >= s.minute && currentMinute <= s.minute + 2);
+  if (slot) { slot.fired = true; return true; }
   return false;
 };
 
@@ -83,7 +78,7 @@ const buildPingMessage = (pingId) => {
       elements: [
         {
           type: 'mrkdwn',
-          text: `_Solo aparece 3 veces por día, al azar._`,
+          text: `_Pings de actividad: 4 por día (2 a la mañana + 2 a la tarde) en horarios aleatorios. Los de la tarde marcan tu última actividad — si no cerrás la jornada, se usa ese horario como salida._`,
         },
       ],
     },
@@ -126,12 +121,8 @@ const runPingCycle = async (app) => {
     // Schedule pings for this user if not yet done
     schedulePingsForUser(user.slack_id, date);
 
-    // Check if it's time
+    // Check if it's time (slot system prevents double-firing, so no extra count check needed)
     if (!shouldPingNow(user.slack_id, date, currentMinute)) continue;
-
-    // Check daily limit
-    const todayCount = db.getTodayPingCount(user.slack_id, date);
-    if (todayCount >= PINGS_PER_DAY) continue;
 
     try {
       const pingId = db.createPing(user.slack_id, date, currentTime);

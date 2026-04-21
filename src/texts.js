@@ -118,6 +118,13 @@ module.exports = {
     exitMissing: '🔔 Son las 18:30\nTodavía no marcaste tu salida.\n👆 Usá el botón del mensaje o abrí la pestaña *Home* de la app.\n\nSi no registrás la salida, la jornada se cerrará automáticamente.\n\n_No respondas este mensaje — la app no lee respuestas directas._',
     exitAutoClosedField: '🔒 *Tu jornada de hoy fue cerrada automáticamente a las 18:30.*\n\nEste es un mensaje informativo. _No respondas acá_ — si tenés algún problema, hablalo con tu admin.',
     exitAutoClosedUser: (exitTime) => `🔒 *Tu jornada de hoy fue cerrada automáticamente.*\nSalida registrada: *${exitTime}*\n\nEste es un mensaje informativo. _No respondas acá_ — si el horario no es correcto, hablalo con tu admin.`,
+    exitAutoClosedByPing: (exitTime, missedCount) => {
+      const missed = missedCount > 0
+        ? `\n\n⚠️ Te perdiste *${missedCount}* ping${missedCount > 1 ? 's' : ''} de actividad hoy.`
+        : '';
+      return `🔒 *Cerré tu jornada automáticamente.*\nSalida registrada: *${exitTime}* _(último ping de actividad que contestaste)_.${missed}\n\n👉 *Recordá que la salida la tenés que marcar vos* — esto es solo un fallback cuando te olvidás.\n\n_Si el horario no es correcto, hablalo con tu admin. No respondas este mensaje._`;
+    },
+    lunchAutoClosed: '🍽️ *Cerré tu almuerzo automáticamente* (1 hora — 13:00 a 14:00) porque no lo registraste.\n\n👉 *Recordá que el almuerzo lo tenés que registrar vos* — esto es solo un fallback cuando te olvidás.\n\n_Si el horario no es correcto, hablalo con tu admin. No respondas este mensaje._',
     meetingOver: (time) => `📍 Tu reunión terminó a las ${time}.\n\n_Este es un mensaje informativo. Si necesitás registrar algo, abrí la pestaña *Home* de la app._`,
   },
   // ═══════════════════════════════════════════════════════════════════

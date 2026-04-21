@@ -552,11 +552,15 @@ app.command('/admin', async ({ command, ack, respond, client }) => {
 // ═══════════════════════════════════════════════════════════════════
 
 app.action('ping_respond', async ({ action, body, ack, client }) => {
-  const result = db.respondToPing(parseInt(action.value, 10));
-  await ack();
-  const ch = body.channel?.id || body.user.id;
-  const text = result ? txt.pings.responded(Math.round(result.response_ms / 1000)) : txt.pings.expired;
-  await client.chat.postEphemeral({ channel: ch, user: body.user.id, text });
+  // Ack FIRST — must respond within 3s even if DB is slow
+  try { await ack(); }
+  catch(e) { console.error('[action] ping_respond — ack failed:', e.message); return; }
+  try {
+    const result = db.respondToPing(parseInt(action.value, 10));
+    const ch = body.channel?.id || body.user.id;
+    const text = result ? txt.pings.responded(Math.round(result.response_ms / 1000)) : txt.pings.expired;
+    await client.chat.postEphemeral({ channel: ch, user: body.user.id, text });
+  } catch (e) { console.error('[action] ping_respond — handler error:', e.message); }
 });
 
 // ═══════════════════════════════════════════════════════════════════

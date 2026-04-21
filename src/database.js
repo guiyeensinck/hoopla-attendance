@@ -414,6 +414,24 @@ const respondToPing = (pingId) => {
 const expirePings = (cutoff, date) => db.prepare("UPDATE activity_pings SET status = 'missed' WHERE status = 'pending' AND date = ? AND sent_at < ?").run(date, cutoff);
 const getPendingPings = (id) => db.prepare("SELECT * FROM activity_pings WHERE slack_id = ? AND status = 'pending' ORDER BY sent_at DESC LIMIT 1").get(id);
 const getTodayPingCount = (id, date) => db.prepare('SELECT COUNT(*) as c FROM activity_pings WHERE slack_id = ? AND date = ?').get(id, date)?.c || 0;
+
+/** Last HH:MM:SS the user responded to any ping today (null if none). */
+const getLastRespondedPingTime = (slackId, date) =>
+  db.prepare(`SELECT responded_at FROM activity_pings
+              WHERE slack_id = ? AND date = ? AND status = 'ok'
+              ORDER BY responded_at DESC LIMIT 1`).get(slackId, date)?.responded_at || null;
+
+/** Pings sent today that the user didn't respond to. */
+const getMissedPingCount = (slackId, date) =>
+  db.prepare(`SELECT COUNT(*) as c FROM activity_pings
+              WHERE slack_id = ? AND date = ? AND status = 'missed'`).get(slackId, date)?.c || 0;
+
+/** Users with entry but lunch still not closed on a given date. */
+const getLunchNotClosed = (date) => db.prepare(`
+  SELECT r.*, u.name, u.real_name FROM records r JOIN users u ON r.slack_id = u.slack_id
+  WHERE r.date = ? AND r.entry_time IS NOT NULL AND r.exit_time IS NULL
+    AND r.lunch_end IS NULL
+`).all(date);
 const getPingSummary = (s, e) => db.prepare(`
   SELECT u.slack_id, u.name, u.real_name, COUNT(*) as total_pings,
     SUM(CASE WHEN p.status = 'ok' THEN 1 ELSE 0 END) as responded,
@@ -886,6 +904,7 @@ module.exports = {
   getRecordsByDateRange, getUserRecordsByDateRange, getMissingToday, getIncompleteToday, getNoLunchYet,
   getWeeklySummary, getOvertimeToday, getDailySummary, getMonthlyExportData,
   createPing, respondToPing, expirePings, getPendingPings, getTodayPingCount, getPingSummary, getPingsByDateRange,
+  getLastRespondedPingTime, getMissedPingCount, getLunchNotClosed,
   logPresence, getPresenceByDate, getPresenceSummary,
   startMeeting, endMeeting, getActiveMeeting, getUserMeetings, getInMeetingUsers,
   getUserWeeklyRecords, countWorkdaysInRange, fillMissingLunch, getHolidays, countMissedDays,
