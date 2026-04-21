@@ -16,6 +16,14 @@ const ENTRY_HOUR = parseInt(process.env.WORK_START_HOUR || '9', 10);
 const receiver = new ExpressReceiver({ signingSecret: process.env.SLACK_SIGNING_SECRET });
 const app = new App({ token: process.env.SLACK_BOT_TOKEN, receiver });
 
+// Global Bolt error handler — surfaces errors that would otherwise be swallowed
+app.error(async (error) => {
+  console.error('[bolt] ❌ Global error:', error.message);
+  if (error.original) console.error('[bolt] Original:', error.original.message);
+  if (error.data) console.error('[bolt] Data:', JSON.stringify(error.data, null, 2));
+  console.error('[bolt] Stack:', error.stack);
+});
+
 const SOLO_MODE = process.env.SOLO_MODE === 'true';
 const SOLO_USER_ID = process.env.SOLO_USER_ID || '';
 if (SOLO_MODE) {
@@ -571,25 +579,36 @@ const sendVerifyLink = async (client, userId) => {
 };
 
 app.action('quick_entry', async ({ body, ack, client }) => {
-  await ack();
-  const userId = body.user.id;
-  const today = t.today();
-  db.upsertUser({ slack_id: userId, name: body.user.name, real_name: body.user.name });
-
-  if (db.isFieldDay(userId, today)) {
-    const record = db.getOrCreateRecord(userId, today);
-    const next = blocks.getNextAction(record);
-    if (!next) {
-      await client.chat.postMessage({ channel: userId, text: txt.asistencia.fieldAlreadyComplete });
-    } else {
-      const time = t.currentTime();
-      db.updateField(userId, today, next, time);
-      await client.chat.postMessage({ channel: userId, text: txt.asistencia.fieldRegistered(txt.status[next].emoji, txt.status[next].label, time) });
-    }
-  } else {
-    await sendVerifyLink(client, userId);
+  console.log(`[action] quick_entry — user=${body.user?.id}`);
+  try {
+    await ack();
+    console.log('[action] quick_entry — ack sent');
+  } catch (e) {
+    console.error('[action] quick_entry — ack failed:', e.message);
+    return;
   }
-  await publishHome(client, userId);
+  try {
+    const userId = body.user.id;
+    const today = t.today();
+    db.upsertUser({ slack_id: userId, name: body.user.name, real_name: body.user.name });
+
+    if (db.isFieldDay(userId, today)) {
+      const record = db.getOrCreateRecord(userId, today);
+      const next = blocks.getNextAction(record);
+      if (!next) {
+        await client.chat.postMessage({ channel: userId, text: txt.asistencia.fieldAlreadyComplete });
+      } else {
+        const time = t.currentTime();
+        db.updateField(userId, today, next, time);
+        await client.chat.postMessage({ channel: userId, text: txt.asistencia.fieldRegistered(txt.status[next].emoji, txt.status[next].label, time) });
+      }
+    } else {
+      await sendVerifyLink(client, userId);
+    }
+    await publishHome(client, userId);
+  } catch (e) {
+    console.error('[action] quick_entry — handler error:', e.message, e.stack);
+  }
 });
 
 app.action('quick_lunch', async ({ body, ack, client }) => {
@@ -854,14 +873,22 @@ const buildHomeBlocks = (userId) => {
 
 const publishHome = async (client, userId) => {
   try {
-    await client.views.publish({
+    const homeBlocks = buildHomeBlocks(userId);
+    console.log(`[home] Building home for ${userId} — ${homeBlocks.length} blocks`);
+    const result = await client.views.publish({
       user_id: userId,
-      view: { type: 'home', blocks: buildHomeBlocks(userId) },
+      view: { type: 'home', blocks: homeBlocks },
     });
-  } catch(e) { console.error('[home] Error publishing home:', e.message); }
+    console.log(`[home] ✅ Published for ${userId} — ok=${result.ok}`);
+  } catch(e) {
+    console.error(`[home] ❌ Error publishing for ${userId}:`, e.message);
+    console.error('[home] Stack:', e.stack);
+    if (e.data) console.error('[home] Slack response:', JSON.stringify(e.data, null, 2));
+  }
 };
 
 app.event('app_home_opened', async ({ event, client }) => {
+  console.log(`[home] app_home_opened — user=${event.user} tab=${event.tab}`);
   if (event.tab !== 'home') return;
   db.upsertUser({ slack_id: event.user, name: event.user, real_name: event.user });
   await publishHome(client, event.user);
@@ -869,28 +896,35 @@ app.event('app_home_opened', async ({ event, client }) => {
 
 // ── Action: mark attendance from Home ────────────────────────────
 app.action('home_mark_attendance', async ({ body, ack, client }) => {
-  await ack();
-  const userId = body.user.id;
-  const today  = t.today();
-  db.upsertUser({ slack_id: userId, name: body.user.name, real_name: body.user.name });
+  console.log(`[action] home_mark_attendance — user=${body.user?.id}`);
+  try { await ack(); console.log('[action] home_mark_attendance — ack sent'); }
+  catch (e) { console.error('[action] home_mark_attendance — ack failed:', e.message); return; }
 
-  if (db.isFieldDay(userId, today)) {
-    const record = db.getOrCreateRecord(userId, today);
-    const next = blocks.getNextAction(record);
-    if (next) {
-      const time = t.currentTime();
-      db.updateField(userId, today, next, time);
-      await client.chat.postMessage({
-        channel: userId,
-        text: txt.asistencia.fieldRegistered(txt.status[next].emoji, txt.status[next].label, time),
-      });
+  try {
+    const userId = body.user.id;
+    const today  = t.today();
+    db.upsertUser({ slack_id: userId, name: body.user.name, real_name: body.user.name });
+
+    if (db.isFieldDay(userId, today)) {
+      const record = db.getOrCreateRecord(userId, today);
+      const next = blocks.getNextAction(record);
+      if (next) {
+        const time = t.currentTime();
+        db.updateField(userId, today, next, time);
+        await client.chat.postMessage({
+          channel: userId,
+          text: txt.asistencia.fieldRegistered(txt.status[next].emoji, txt.status[next].label, time),
+        });
+      }
+    } else {
+      await sendVerifyLink(client, userId);
     }
-  } else {
-    await sendVerifyLink(client, userId);
-  }
 
-  // Refresh home
-  await publishHome(client, userId);
+    // Refresh home
+    await publishHome(client, userId);
+  } catch (e) {
+    console.error('[action] home_mark_attendance — handler error:', e.message, e.stack);
+  }
 });
 
 // ── Action: request leave from Home ─────────────────────────────
