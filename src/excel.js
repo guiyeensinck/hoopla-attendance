@@ -1,120 +1,98 @@
 const ExcelJS = require('exceljs');
 const path = require('path');
-const fs = require('fs');
 const t = require('./time');
 const db = require('./database');
+const txt = require('./texts');
 
 const EXPORT_DIR = process.env.DB_PATH || path.join(__dirname, '..', 'data');
 
-/**
- * Generate monthly Excel report and return file path
- */
-const generateMonthlyExcel = async (startDate, endDate, label) => {
-  const { users, records, overrides } = db.getMonthlyExportData(startDate, endDate);
+const header = (ws, color) => {
+  ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: color } };
+};
 
+/**
+ * Excel de asistencia con 3 hojas: detalle diario, resumen por persona, novedades.
+ */
+const generarExcel = async (from, to, label) => {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Hoopla Asistencia';
   wb.created = new Date();
 
-  // ─── Sheet 1: Detalle diario ─────────────────────────────────────
-  const ws = wb.addWorksheet('Detalle');
-
-  ws.columns = [
-    { header: 'Fecha', key: 'date', width: 14 },
-    { header: 'Persona', key: 'name', width: 22 },
-    { header: 'Entrada', key: 'entry', width: 10 },
-    { header: 'Almuerzo ini', key: 'lunch_start', width: 14 },
-    { header: 'Almuerzo fin', key: 'lunch_end', width: 14 },
-    { header: 'Salida', key: 'exit', width: 10 },
-    { header: 'Horas', key: 'hours', width: 10 },
-    { header: 'Modo', key: 'mode', width: 14 },
-    { header: 'Notas', key: 'notes', width: 25 },
+  // ─── Hoja 1: Detalle diario ──────────────────────────────────────
+  const ws1 = wb.addWorksheet('Detalle diario');
+  ws1.columns = [
+    { header: 'Fecha', key: 'fecha', width: 12 },
+    { header: 'Persona', key: 'nombre', width: 22 },
+    { header: 'Entrada', key: 'entrada', width: 10 },
+    { header: 'Tarde (min)', key: 'tarde', width: 12 },
+    { header: 'Almuerzo ini', key: 'al_ini', width: 13 },
+    { header: 'Almuerzo fin', key: 'al_fin', width: 13 },
+    { header: 'Salida', key: 'salida', width: 10 },
+    { header: 'Anticipado (min)', key: 'anticipado', width: 16 },
+    { header: 'Horas', key: 'horas', width: 9 },
+    { header: 'Origen', key: 'origen', width: 14 },
+    { header: 'Auto-cierre', key: 'auto', width: 12 },
+    { header: 'Corregida (original)', key: 'correccion', width: 18 },
   ];
-
-  // Header style
-  ws.getRow(1).font = { bold: true };
-  ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF6C5CE7' } };
-  ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-
-  for (const r of records) {
-    ws.addRow({
-      date: r.date,
-      name: r.real_name || r.name,
-      entry: r.entry_time || '',
-      lunch_start: r.lunch_start || '',
-      lunch_end: r.lunch_end || '',
-      exit: r.exit_time || '',
-      hours: r.total_hours || '',
-      mode: r.work_mode === 'field' ? 'Campo' : 'Oficina',
-      notes: r.notes || '',
+  header(ws1, 'FF6C5CE7');
+  for (const d of db.getDias(from, to).sort((a, b) => a.fecha.localeCompare(b.fecha))) {
+    ws1.addRow({
+      fecha: d.fecha, nombre: d.nombre,
+      entrada: d.entrada || '', tarde: d.tarde_min || '',
+      al_ini: d.almuerzo_inicio || '', al_fin: d.almuerzo_fin || '',
+      salida: d.salida || '', anticipado: d.anticipado_min || '',
+      horas: d.horas ?? '',
+      origen: d.origen === 'mobile_remoto' ? 'Mobile (remoto)' : d.origen === 'auto' ? 'Auto' : d.origen === 'slack' ? 'Slack' : 'Web',
+      auto: d.auto_closed ? 'Sí' : '',
+      correccion: d.corregido ? d.valor_original : '',
     });
   }
 
-  // ─── Sheet 2: Resumen por persona ────────────────────────────────
-  const ws2 = wb.addWorksheet('Resumen');
-
+  // ─── Hoja 2: Resumen por persona ─────────────────────────────────
+  const ws2 = wb.addWorksheet('Resumen por persona');
   ws2.columns = [
-    { header: 'Persona', key: 'name', width: 22 },
-    { header: 'Días trabajados', key: 'days', width: 16 },
-    { header: 'Días campo', key: 'field_days', width: 14 },
-    { header: 'Horas totales', key: 'total_hours', width: 14 },
-    { header: 'Horas promedio', key: 'avg_hours', width: 14 },
-    { header: 'Vacaciones', key: 'vacations', width: 14 },
-    { header: 'Ausencias', key: 'absences', width: 14 },
-    { header: 'Médico', key: 'medical', width: 14 },
+    { header: 'Persona', key: 'nombre', width: 22 },
+    { header: 'Horario', key: 'horario', width: 14 },
+    { header: 'Días trabajados', key: 'dias', width: 15 },
+    { header: 'Horas', key: 'horas', width: 10 },
+    { header: 'Horas esperadas', key: 'esperadas', width: 15 },
+    { header: 'Diferencia', key: 'diff', width: 11 },
+    { header: 'Llegadas tarde', key: 'tardes', width: 14 },
+    { header: 'Auto-cierres', key: 'auto', width: 12 },
+    { header: 'Horas extra', key: 'extra', width: 11 },
   ];
-
-  ws2.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-  ws2.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00B894' } };
-
-  for (const user of users) {
-    const userRecords = records.filter(r => r.slack_id === user.slack_id);
-    const userOverrides = overrides.filter(o => o.slack_id === user.slack_id);
-    const fieldDays = userRecords.filter(r => r.work_mode === 'field').length;
-    const totalHours = userRecords.reduce((s, r) => s + (r.total_hours || 0), 0);
-    const daysWorked = userRecords.filter(r => r.entry_time).length;
-
+  header(ws2, 'FF00B894');
+  for (const p of db.resumenPersonas(from, to)) {
     ws2.addRow({
-      name: user.real_name || user.name,
-      days: daysWorked,
-      field_days: fieldDays,
-      total_hours: Math.round(totalHours * 100) / 100,
-      avg_hours: daysWorked > 0 ? Math.round((totalHours / daysWorked) * 100) / 100 : 0,
-      vacations: userOverrides.filter(o => o.type === 'vacation').length,
-      absences: userOverrides.filter(o => ['absent', 'day_off'].includes(o.type)).length,
-      medical: userOverrides.filter(o => o.type === 'medical').length,
+      nombre: p.nombre, horario: `${p.hora_entrada}–${p.hora_salida}`,
+      dias: p.diasTrabajados, horas: p.horas, esperadas: p.esperadas,
+      diff: Math.round((p.horas - p.esperadas) * 100) / 100,
+      tardes: p.tardes, auto: p.autoCierres, extra: p.extraHs,
     });
   }
 
-  // ─── Sheet 3: Novedades ──────────────────────────────────────────
+  // ─── Hoja 3: Novedades ───────────────────────────────────────────
   const ws3 = wb.addWorksheet('Novedades');
-
   ws3.columns = [
-    { header: 'Fecha', key: 'date', width: 14 },
-    { header: 'Tipo', key: 'type', width: 18 },
-    { header: 'Persona', key: 'name', width: 22 },
-    { header: 'Motivo', key: 'reason', width: 30 },
+    { header: 'Fecha', key: 'fecha', width: 12 },
+    { header: 'Tipo', key: 'tipo', width: 20 },
+    { header: 'Persona', key: 'nombre', width: 22 },
+    { header: 'Motivo', key: 'motivo', width: 32 },
   ];
-
-  ws3.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-  ws3.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDCB6E' } };
-
-  const { OVERRIDE_LABELS } = require('./blocks');
-  for (const o of overrides) {
+  header(ws3, 'FFFDCB6E');
+  for (const n of db.getNovedadesRange(from, to)) {
     ws3.addRow({
-      date: o.date,
-      type: OVERRIDE_LABELS[o.type] || o.type,
-      name: o.real_name || o.name || 'Todos',
-      reason: o.reason || '',
+      fecha: n.fecha,
+      tipo: (txt.NOVEDADES[n.tipo] || n.tipo).replace(/^\S+\s/, ''), // sin emoji
+      nombre: n.nombre || 'Todos',
+      motivo: n.motivo || '',
     });
   }
 
-  // Save
-  const filename = `asistencia_${label}.xlsx`;
-  const filepath = path.join(EXPORT_DIR, filename);
+  const filepath = path.join(EXPORT_DIR, `asistencia_${label}.xlsx`);
   await wb.xlsx.writeFile(filepath);
-
   return filepath;
 };
 
-module.exports = { generateMonthlyExcel };
+module.exports = { generarExcel };

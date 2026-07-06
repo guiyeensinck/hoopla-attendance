@@ -1,13 +1,11 @@
 {
   "name": "hoopla-attendance",
   "version": "1.0.0",
-  "description": "Slack attendance tracker for Hoopla — entry, lunch, exit logging with dashboard and reports",
+  "description": "Slack attendance tracker for Hoopla — horarios individuales, verificación desktop, extras y reportes",
   "main": "src/app.js",
   "scripts": {
     "start": "node src/app.js",
-    "dev": "nodemon src/app.js",
-    "init-db": "node src/database.js --init",
-    "test": "echo \"No tests yet\" && exit 0"
+    "dev": "nodemon src/app.js"
   },
   "dependencies": {
     "@slack/bolt": "^3.17.0",

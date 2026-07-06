@@ -1,199 +1,145 @@
 /**
- * TODOS LOS TEXTOS QUE VEN LOS USUARIOS
- * Editá lo que quieras y después importá este archivo desde los demás módulos.
- * Las variables entre ${} se reemplazan dinámicamente.
- *
- * Secciones:
- * 1. Labels y emojis de estado
- * 2. Mensajes de /marcar (Slack)
- * 3. Mensajes de /campo
- * 4. Mensajes de /horarios
- * 5. Recordatorios automáticos (DM al usuario)
- * 6. Alertas al canal (las ve el admin)
- * 7. Pings de actividad
- * 8. Página web de verificación
- * 9. Labels de novedades (overrides)
- * 10. Errores
+ * TODOS LOS TEXTOS VISIBLES DE LA APP
+ * Editá acá y los cambios impactan en Slack, DMs y la página web.
  */
 
+const TIPOS = {
+  entrada:         { emoji: '🟢', label: 'Entrada' },
+  almuerzo_inicio: { emoji: '🍽️', label: 'Inicio almuerzo' },
+  almuerzo_fin:    { emoji: '⏱️', label: 'Fin almuerzo' },
+  salida:          { emoji: '🔴', label: 'Salida' },
+};
 
+const NOVEDADES = {
+  feriado:    '🏖️ Feriado',
+  vacaciones: '✈️ Vacaciones',
+  medico:     '🏥 Turno médico',
+  ausente:    '❌ Ausente',
+  libre:      '📅 Día libre',
+  salida:     '🕐 Salida autorizada',
+  remoto:     '📱 Fichaje remoto',
+};
 
 module.exports = {
+  TIPOS,
+  NOVEDADES,
 
-  status: {
-    entry_time:   { emoji: '🟢', label: 'Entrada' },
-    lunch_start:  { emoji: '🍽️', label: 'Inicio almuerzo' },
-    lunch_end:    { emoji: '⏱️', label: 'Fin almuerzo' },
-    exit_time:    { emoji: '🔴', label: 'Salida' },
-  },
-// ═══════════════════════════════════════════════════════════════════
-  // 1. LABELS Y EMOJIS DE ESTADO
-  // ═══════════════════════════════════════════════════════════════════
-  overrides: {
-    holiday:    '🏖️ Feriado',
-    vacation:   '✈️ Vacaciones',
-    medical:    '🏥 Turno médico',
-    field:      '🎬 Trabajo de campo',
-    absent:     '❌ Ausente',
-    early_exit: '🕐 Salida temprana',
-    day_off:    '📍 Día libre',
-    meeting:    '📅 Reunión',
+  // ─── Chat por DM (el bot se usa como un compañero) ────────────────
+  chat: {
+    menuSaludo: (nombre) => `👋 ¡Hola, ${nombre}! ¿Qué necesitás?`,
+    btnMarcar: (label) => `🕒 Marcar ${label}`,
+    btnSemana: '📊 Mi semana',
+    menuHint: '_También podés escribirme directo: *marcar* (te mando el link) u *horarios* (tu semana)._',
+    adminHint: '_Sos admin: escribí *admin* para ver los comandos de gestión._',
   },
 
-  // ═══════════════════════════════════════════════════════════════════
-  // 2. /marcar — Lo que ve el usuario en Slack
-  // ═══════════════════════════════════════════════════════════════════
-
-  asistencia: {
-    title: '🕒 *¡Hora de marcar!*',
-    linkInstructions: 'Abrí este link desde tu computadora:',
-    linkLabel: 'Marcá tu jornada',
-    pinLabel: (pin) => `🔑 Tu PIN personal: *\`${pin}\`*`,
-    expireNote: '⏱️ El link y el PIN expiran en 2 minutos. Solo funciona desde computadora.',
-    alreadyComplete: '✅ Ya tenés el día completo',
-    fieldRegistered: (emoji, label, time) => `🎬 *Trabajo de campo* — ${emoji} *${label}* registrada a las *${time}*`,
-    fieldAlreadyComplete: '✅ Ya tenés el día completo registrado (campo).',
-  },
-// ═══════════════════════════════════════════════════════════════════
-  // 3. /campo
-  // ═══════════════════════════════════════════════════════════════════
-  campo: {
-    alreadyDeclared: '🎬 Ya tenés el día marcado como trabajo de campo.',
-    confirmed: (reason) => `🎬 *Trabajo de campo registrado*\nMotivo: ${reason}\n\nPodés usar \`/marcar\` desde el celular hoy.`,
+  // ─── Marcación ────────────────────────────────────────────────────
+  marcar: {
+    linkTitle: '🕒 *¡Hora de marcar!*',
+    linkInstructions: (label) => `Vas a registrar: *${label}*. Abrí este link desde tu computadora:`,
+    linkLabel: 'Marcar mi jornada',
+    linkCorreccion: 'Tu salida fue cerrada automáticamente. Con este link podés corregirla (una sola vez):',
+    expireNote: '⏱️ El link es de un solo uso y expira en 5 minutos.',
+    diaCompleto: '✅ Ya tenés la jornada completa registrada por hoy.',
+    noTrackeado: '⚠️ Todavía no estás en el seguimiento de asistencia. Pedile a un admin que te agregue.',
   },
 
-  // ═══════════════════════════════════════════════════════════════════
-  // 4. /horarios — Balance y estado del día
-  // ═══════════════════════════════════════════════════════════════════
-  estado: {
-    title: (date) => `📊 *Tu estado — ${date}*`,
-    pending: '_pendiente_',
-    dayComplete: '✅ Jornada completa',
-    dayInProgress: '⏳ Jornada en curso',
-    weeklyBalance: (worked, expected, diff) =>
-      `📅 *Balance semanal:*\n` +
-      `  Horas trabajadas: *${worked}hs*\n` +
-      `  Horas esperadas: *${expected}hs*\n` +
-      `  Diferencia: *${diff > 0 ? '+' : ''}${diff}hs*`,
-    onTrack: '🟢 Vas bien esta semana.',
-    behind: (missing, suggestedExit) =>
-      `🟡 Te faltan *${missing}hs* esta semana. ` +
-      `Para compensar, hoy podrías trabajar hasta las *${suggestedExit}*.`,
-    behindGeneral: (missing) =>
-      `🟡 Te faltan *${missing}hs* esta semana. Tenés hasta el viernes para compensarlas.`,
-    ahead: (extra) => `🟢 Tenés *${extra}hs* de más esta semana. Bien ahí.`,
-    late: (minutes) => `⚠️ Llegaste *${minutes} minutos tarde* hoy.`,
-    noEntry: 'Todavía no marcaste tu entrada hoy.\nPodés hacerlo con `/marcar`.',
+  // ─── Página web ───────────────────────────────────────────────────
+  web: {
+    mobileBloqueado: 'El registro solo puede hacerse desde una computadora.',
+    mobileBloqueadoDetalle: 'Abrí el link desde tu compu. Si tenés autorización para fichar desde el celular, pedile al admin que cargue `remoto` para hoy.',
+    linkInvalido: 'Link inválido o expirado',
+    linkInvalidoDetalle: 'Este link ya fue usado o venció (dura 5 minutos). Escribile "marcar" al bot en Slack y te manda uno nuevo.',
+    registrado: '✅ Registrado',
+    corregido: '✅ Salida corregida',
+    diaCompleto: '✅ Día completo',
+    tarde: (min) => `⚠️ Llegaste ${min} min tarde según tu horario.`,
+    anticipado: (min) => `⚠️ Saliste ${min} min antes de tu horario.`,
+    balanceOk: 'Justo en horario. 💪',
+    balanceAFavor: (hs) => `Tenés ${hs}hs a favor esta semana. Excelente.`,
+    balanceDebe: (hs, hora) => `Te faltan ${hs}hs esta semana. Para compensar hoy, quedate hasta las ${hora}.`,
+    balanceDebeGeneral: (hs) => `Te faltan ${hs}hs esta semana. Tenés hasta el viernes para compensar.`,
   },
-// ═══════════════════════════════════════════════════════════════════
-// 5. RECORDATORIOS AUTOMÁTICOS (DM)
-// // ═══════════════════════════════════════════════════════════════════
 
-  reminders: {
-    entryMissing: () => {
-      const HOOPLA_ASCII =
-        '██╗░░██╗░█████╗░░█████╗░██████╗░██╗░░░░░░█████╗░\n' +
-        '██║░░██║██╔══██╗██╔══██╗██╔══██╗██║░░░░░██╔══██╗\n' +
-        '███████║██║░░██║██║░░██║██████╔╝██║░░░░░███████║\n' +
-        '██╔══██║██║░░██║██║░░██║██╔═══╝░██║░░░░░██╔══██║\n' +
-        '██║░░██║╚█████╔╝╚█████╔╝██║░░░░░███████╗██║░░██║\n' +
-        '╚═╝░░╚═╝░╚════╝░░╚════╝░╚═╝░░░░░╚══════╝╚═╝░░╚═╝';
-      const phrases = [
-        'La creatividad es inteligencia divirtiéndose. — Einstein',
-        'La imaginación es más importante que el conocimiento. — Einstein',
-        'No esperes inspiración. La inspiración existe, pero tiene que encontrarte trabajando. — Picasso',
-        'Cada acto de creación es, primero, un acto de destrucción. — Picasso',
-        'La creatividad es conectar cosas que nadie había conectado antes. — Steve Jobs',
-        'La creatividad requiere el coraje de soltar las certezas. — Erich Fromm',
-        'El secreto de la creatividad es saber cómo esconder tus fuentes. — Einstein',
-        'La creatividad es ver lo que todos ven y pensar lo que nadie ha pensado. — A. Szent-Györgyi',
-        'La creatividad es el residuo del tiempo bien aprovechado. — Einstein',
-        'Crear es resistir. Resistir es crear. — Stéphane Hessel',
-      ];
-      const phrase = phrases[Math.floor(Math.random() * phrases.length)];
-      return '```\n' + HOOPLA_ASCII + '\n```\n\n_' + phrase + '_\n\n🔔 Son las 9:35 👀\n¿Te olvidaste de marcar tu entrada?\n👆 Usá el botón del mensaje o abrí la pestaña *Home* de la app.\n\n_No respondas este mensaje — la app no lee respuestas directas._';
-    },
-    entryMissingFollowUp: (time) => `🔔 *${time}* — Todavía no registraste tu entrada.\n👆 Usá el botón del mensaje o abrí la pestaña *Home* de la app.\n\n_No respondas este mensaje — la app no lee respuestas directas._`,
-    lunchMissing: '🍽️ Son las 14:00\n¿Te olvidaste de marcar tu almuerzo?\n👆 Usá el botón del mensaje o abrí la pestaña *Home* de la app.\n\n_No respondas este mensaje — la app no lee respuestas directas._',
-    exitMissing: '🔔 Son las 18:30\nTodavía no marcaste tu salida.\n👆 Usá el botón del mensaje o abrí la pestaña *Home* de la app.\n\nSi no registrás la salida, la jornada se cerrará automáticamente.\n\n_No respondas este mensaje — la app no lee respuestas directas._',
-    exitAutoClosedField: '🔒 *Tu jornada de hoy fue cerrada automáticamente a las 18:30.*\n\nEste es un mensaje informativo. _No respondas acá_ — si tenés algún problema, hablalo con tu admin.',
-    exitAutoClosedUser: (exitTime) => `🔒 *Tu jornada de hoy fue cerrada automáticamente.*\nSalida registrada: *${exitTime}*\n\nEste es un mensaje informativo. _No respondas acá_ — si el horario no es correcto, hablalo con tu admin.`,
-    exitAutoClosedByPing: (exitTime, missedCount) => {
-      const missed = missedCount > 0
-        ? `\n\n⚠️ Te perdiste *${missedCount}* ping${missedCount > 1 ? 's' : ''} de actividad hoy.`
-        : '';
-      return `🔒 *Cerré tu jornada automáticamente.*\nSalida registrada: *${exitTime}* _(último ping de actividad que contestaste)_.${missed}\n\n👉 *Recordá que la salida la tenés que marcar vos* — esto es solo un fallback cuando te olvidás.\n\n_Si el horario no es correcto, hablalo con tu admin. No respondas este mensaje._`;
-    },
-    lunchAutoClosed: '🍽️ *Cerré tu almuerzo automáticamente* (1 hora — 13:00 a 14:00) porque no lo registraste.\n\n👉 *Recordá que el almuerzo lo tenés que registrar vos* — esto es solo un fallback cuando te olvidás.\n\n_Si el horario no es correcto, hablalo con tu admin. No respondas este mensaje._',
-    meetingOver: (time) => `📍 Tu reunión terminó a las ${time}.\n\n_Este es un mensaje informativo. Si necesitás registrar algo, abrí la pestaña *Home* de la app._`,
+  // ─── "horarios" ───────────────────────────────────────────────────
+  horarios: {
+    sinRegistro: 'Todavía no marcaste entrada hoy. Escribime *marcar* cuando arranques.',
+    enCurso: '⏳ Jornada en curso.',
+    completa: (hs) => `✅ Jornada completa (${hs}hs).`,
   },
-  // ═══════════════════════════════════════════════════════════════════
-  // 6. ALERTAS AL CANAL (admin)
-  // ═══════════════════════════════════════════════════════════════════
- 
-  alerts: {
-    missingEntry: (names) => `⚠️ *Sin entrada hoy:*\n${names}`,
-    overtime: (lines) => `⚠️ *Horas extra detectadas:*\n${lines}`,
-    dailySummaryTitle: (date) => `📋 Resumen del día — ${date}`,
-    weeklyReportTitle: (range) => `📊 Reporte: ${range}`,
-    monthlyReportTitle: (month) => `📊 Reporte mensual: ${month}`,
+
+  // ─── Onboarding (DM al ser agregado al tracking) ──────────────────
+  onboarding: (user) => `👋 *¡Hola! Te sumaron al registro de asistencia de Hoopla.*
+
+*¿Qué registra el sistema?*
+• Tus marcaciones del día: entrada, inicio y fin de almuerzo, y salida.
+• Tu presencia en Slack (activo/ausente) únicamente dentro de tu horario laboral.
+
+*¿Qué ve el admin?*
+Tus horarios marcados, llegadas tarde, cierres automáticos y horas extra. Nadie más del equipo ve tus datos.
+
+*¿Cómo marco?*
+Escribime *marcar* acá en este chat (como le escribirías a cualquier compañero). Te mando un link de un solo uso (dura 5 min) que se abre *desde la computadora*. La hora la pone el servidor.
+
+*Tu horario asignado*
+🕐 ${user.hora_entrada} a ${user.hora_salida} — ${user.carga_horaria}hs por día. Si está mal, avisale a tu admin.
+
+*¿Horas extra?*
+Cuando llegue tu horario de salida y sigas trabajando, el bot te va a escribir: elegí "Necesito 30 min más" y un admin lo aprueba. Después se renueva cada 30 min sin nueva aprobación.
+
+*¿Ausencias, médico, vacaciones?*
+Avisale a tu admin, que las carga en el sistema para que no te cuenten como falta.
+
+Escribime *horarios* cuando quieras ver tu estado del día y tu balance semanal. 📊`,
+
+  // ─── Recordatorios ────────────────────────────────────────────────
+  recordatorios: {
+    entrada: (hora) => `⏰ *¿Arrancaste?* Tu horario de entrada era ${hora} y todavía no marcaste. Escribime *marcar* y te mando el link.`,
+    faltantesAdmin: (lista) => `⚠️ *Sin fichar pasada 1 hora de su horario de entrada:*\n${lista}`,
   },
-// ═══════════════════════════════════════════════════════════════════
-  // 7. PINGS DE ACTIVIDAD
-  // ═══════════════════════════════════════════════════════════════════
+
+  // ─── Cierre del día ───────────────────────────────────────────────
+  cierre: {
+    dm: (hora) => `🌆 *Llegó tu horario de salida (${hora}).* ¿Cerramos el día?`,
+    btnSalida: '🔴 Marcar salida',
+    btnExtra: '⏳ Necesito 30 min más',
+    salidaRegistrada: (hora) => `✅ Salida registrada a las *${hora}*. ¡Buen descanso!`,
+    yaCerrado: '✅ Tu salida ya estaba registrada.',
+    autoCerrado: (hora) => `🔒 No respondiste, así que registré tu salida automáticamente a las *${hora}* (tu horario). Si seguías trabajando, podés corregirla una sola vez: escribime *marcar*.`,
+    extraPedida: '📨 Le pedí autorización al admin para tus 30 minutos extra. Te aviso apenas responda.',
+    extraAprobada: (por) => `✅ *${por}* aprobó tus horas extra. Tenés 30 minutos más — te vuelvo a preguntar cuando terminen.`,
+    extraRechazada: 'El admin no aprobó la extensión. Marcá tu salida cuando puedas:',
+    pregunta: '⏳ *Se cumplieron los 30 minutos.* ¿Seguís trabajando?',
+    btnSeguir: '✅ Sí, 30 más',
+    extraRenovada: '✅ Anotado: 30 minutos más de horas extra.',
+    cierreLimite: (hora) => `🔒 No respondiste la consulta, así que cerré tu jornada a las *${hora}* (fin de tu último bloque extra).`,
+    adminPedido: (nombre, hora) => `⏳ *${nombre}* pide 30 minutos extra (su salida era ${hora}).`,
+    btnAprobar: '✅ Aprobar',
+    btnRechazar: '❌ Rechazar',
+    adminAprobado: (nombre, por) => `✅ Horas extra de *${nombre}* aprobadas por ${por}.`,
+    adminRechazado: (nombre, por) => `❌ Horas extra de *${nombre}* rechazadas por ${por}.`,
+  },
+
+  // ─── Pings dirigidos ──────────────────────────────────────────────
   pings: {
-    message: '🏓 *Check de actividad*\n¿Seguís ahí? Tocá el botón para confirmar.',
-    buttonLabel: '✅ Acá estoy',
-    timeout: (minutes) => `⏱️ Tenés ${minutes} minutos para responder`,
-    fallbackText: '🏓 Check de actividad — ¿seguís ahí?',
-    responded: (seconds) => `✅ Respuesta en ${seconds}s. ¡Bien ahí!`,
-    expired: '⏱️ Ping expirado o ya respondido.',
+    aviso: (desde, hasta) => `ℹ️ *Aviso:* un admin activó chequeos de actividad para vos ${desde === hasta ? `el día ${desde}` : `del ${desde} al ${hasta}`}. Vas a recibir algunos mensajes con un botón "Acá estoy" durante tu horario laboral — respondelos cuando puedas.`,
+    ping: '👋 *Chequeo de actividad* — tocá el botón cuando puedas.',
+    btnAca: '✅ Acá estoy',
+    respondido: (seg) => `✅ Registrado — respondiste en ${seg}s.`,
+    expirado: 'Este chequeo ya venció (había 10 minutos para responder).',
   },
-// ═══════════════════════════════════════════════════════════════════
-  // 8. PÁGINA WEB DE VERIFICACIÓN
-  // ═══════════════════════════════════════════════════════════════════
 
-  verify: {
-    mobileBlocked: {
-      title: 'Dispositivo no permitido',
-      message: 'Este registro solo funciona desde un navegador de escritorio. Abrí el link desde tu computadora.',
-    },
-    linkExpired: {
-      title: 'Link expirado',
-      message: 'Este link ya fue usado o expiró. Generá uno nuevo con /marcar en Slack.',
-    },
-    wrongPin: {
-      title: 'PIN incorrecto',
-      message: 'El PIN no coincide. Probá generando uno nuevo con `/marcar`.',
-    },
-    dayComplete: {
-      title: '✅ Día completo',
-      message: (name) => `${name}, ya tenés todas las marcaciones registradas para hoy.`,
-    },
-    registering: 'Registrando',
-    pinFieldLabel: 'Ingresá el PIN que te apareció en Slack',
-    submitButton: (label) => `✅ Marcar ${label}`,
-    successTitle: '✅ Registrado',
-    successDetail: (label, time) => `*${label}* a las *${time}*`,
+  // ─── Resúmenes ────────────────────────────────────────────────────
+  resumen: {
+    sinNovedades: (n) => `✅ *Sin novedades* — ${n} presentes.`,
   },
-// ═══════════════════════════════════════════════════════════════════
-  // 9. REUNIONES
-  // ═══════════════════════════════════════════════════════════════════
 
-  meetings: {
-    started: (reason, time) => `📍 *Reunión registrada*\nMotivo: ${reason}\nInicio: ${time}\n\nCuando termines, escribí \`/reunion fin\` en el DM con la app.`,
-    ended: (time, duration) => `📍 *Reunión finalizada*\nHora: ${time}\nDuración: ${duration} minutos`,
-    noActive: 'No tenés ninguna reunión activa.',
-    alreadyInMeeting: 'Ya tenés una reunión activa. Cerrala con `/reunion fin` antes de empezar otra.',
-  },
-// ═══════════════════════════════════════════════════════════════════
-  // 10. ERRORES Y PERMISOS
-  // ═══════════════════════════════════════════════════════════════════
-
-  errors: {
-    noPermission: '🔒 No tenés permisos de admin.',
-    superOnly: '🔒 Solo el super admin puede otorgar permisos.',
-    unknownCommand: '❓ Comando no reconocido. `/admin lista` para ver opciones.',
-    dataIncomplete: 'Faltó la acción a registrar.',
+  // ─── Errores ──────────────────────────────────────────────────────
+  errores: {
+    sinPermiso: '🔒 Este comando es solo para admins.',
+    soloSuperAdmin: '🔒 Solo el super admin (definido en el servidor) puede nombrar admins.',
+    comandoDesconocido: '❓ No entendí. Escribime `admin` solo y te muestro todas las opciones de gestión.',
+    faltaMencion: '⚠️ Tenés que @mencionar al usuario (no escribas el nombre a mano).',
+    fechaInvalida: '⚠️ La fecha tiene que ser YYYY-MM-DD (ej: 2026-07-15).',
   },
 };

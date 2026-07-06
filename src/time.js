@@ -1,50 +1,62 @@
 const dayjs = require('dayjs');
 const utc = require('dayjs/plugin/utc');
 const timezone = require('dayjs/plugin/timezone');
+require('dayjs/locale/es');
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
+dayjs.locale('es');
 
+// Timezone forzado para toda la app — todos los cálculos pasan por acá.
 const TZ = 'America/Argentina/Buenos_Aires';
 
-/** Current time in Buenos Aires */
+/** Ahora en Buenos Aires */
 const now = () => dayjs().tz(TZ);
 
-/** Today's date as YYYY-MM-DD in Buenos Aires */
+/** Fecha de hoy YYYY-MM-DD */
 const today = () => now().format('YYYY-MM-DD');
 
-/** Current time as HH:mm in Buenos Aires */
+/** Hora actual HH:mm */
 const currentTime = () => now().format('HH:mm');
 
-/** Current time as HH:mm:ss in Buenos Aires */
-const currentTimeFull = () => now().format('HH:mm:ss');
+/** Minuto del día actual (0-1439) */
+const nowMin = () => now().hour() * 60 + now().minute();
 
-/** Format a date string for display */
-const formatDate = (dateStr) => dayjs(dateStr).format('DD/MM/YYYY');
+/** "HH:MM" → minutos desde las 00:00 */
+const toMin = (hhmm) => {
+  const [h, m] = String(hhmm).split(':').map(Number);
+  return h * 60 + m;
+};
 
-/** Format date range for display */
-const formatRange = (start, end) => `${dayjs(start).format('DD/MM')} – ${dayjs(end).format('DD/MM/YYYY')}`;
+/** minutos → "HH:MM" */
+const toHHMM = (min) => {
+  const m = ((min % 1440) + 1440) % 1440;
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+};
 
-/** Start of current week (Monday) */
-const weekStart = () => now().startOf('week').format('YYYY-MM-DD');
+/** Lunes de la semana actual (el balance se resetea cada lunes) */
+const weekStart = () => {
+  const n = now();
+  return n.subtract((n.day() + 6) % 7, 'day').format('YYYY-MM-DD');
+};
 
-/** End of current week */
-const weekEnd = () => now().endOf('week').format('YYYY-MM-DD');
-
-/** Start of current month */
+/** Primer día del mes actual */
 const monthStart = () => now().startOf('month').format('YYYY-MM-DD');
 
-/** Current hour (number) */
-const currentHour = () => now().hour();
+const isValidDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || '') && dayjs(s).isValid();
+const isValidTime = (s) => /^([01]\d|2[0-3]):[0-5]\d$/.test(s || '');
 
-/** Current minute of day */
-const currentMinuteOfDay = () => now().hour() * 60 + now().minute();
+/** ¿Es día hábil? (lun-vie) */
+const isWeekday = (dateStr) => {
+  const d = dayjs(dateStr).day();
+  return d !== 0 && d !== 6;
+};
 
-/** Day of week (0=Sunday) */
-const dayOfWeek = () => now().day();
+const fmtDate = (d) => dayjs(d).format('DD/MM/YYYY');
+const fmtRange = (s, e) => `${dayjs(s).format('DD/MM')} – ${dayjs(e).format('DD/MM/YYYY')}`;
 
 module.exports = {
-  dayjs, TZ, now, today, currentTime, currentTimeFull,
-  formatDate, formatRange, weekStart, weekEnd, monthStart,
-  currentHour, currentMinuteOfDay, dayOfWeek,
+  dayjs, TZ, now, today, currentTime, nowMin,
+  toMin, toHHMM, weekStart, monthStart,
+  isValidDate, isValidTime, isWeekday, fmtDate, fmtRange,
 };

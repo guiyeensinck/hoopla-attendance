@@ -1,10 +1,8 @@
 const express = require('express');
 const t = require('./time');
-const dayjs = t.dayjs;
 const db = require('./database');
-const verify = require('./verification');
-const { getNextAction } = require('./blocks');
-const { LEAVE_TYPES } = require('./leaves');
+const txt = require('./texts');
+const { layout } = require('./styles');
 
 const dashboardAuth = (req, res, next) => {
   const token = process.env.DASHBOARD_TOKEN;
@@ -18,886 +16,152 @@ const dashboardAuth = (req, res, next) => {
   res.status(401).send('Acceso no autorizado');
 };
 
-const setupDashboard = (boltApp) => {
+const setupDashboard = (receiver) => {
   const router = express.Router();
   router.use(dashboardAuth);
 
-  // ─── Dashboard home ──────────────────────────────────────────────
-  router.get('/', (req, res) => {
-    const today = t.today();
-    const weekStart = t.weekStart();
-    const weekEnd = t.weekEnd();
-    const todayRecords = db.getRecordsByDateRange(today, today);
-    const missing = db.getMissingToday(today);
-    const weeklySummary = db.getWeeklySummary(weekStart, weekEnd);
-    const users = db.getAllUsers();
-    const tracked = db.getTrackedUsers();
-    res.send(renderDashboard({ todayRecords, missing, weeklySummary, users, tracked, today }));
+  // ─── Hoy ──────────────────────────────────────────────────────────
+  router.get('/', (_req, res) => {
+    const hoy = t.today();
+    const dias = db.getDias(hoy, hoy);
+    const tracked = db.getTracked();
+    const falt = db.faltantes(hoy);
+    const novedades = db.getNovedadesFecha(hoy);
+    res.send(renderHoy({ hoy, dias, tracked, falt, novedades }));
   });
 
-  // ─── Records ─────────────────────────────────────────────────────
-  router.get('/records', (req, res) => {
-    const { from, to, user } = req.query;
-    const startDate = from || t.monthStart();
-    const endDate = to || t.today();
-    const records = user ? db.getUserRecordsByDateRange(user, startDate, endDate) : db.getRecordsByDateRange(startDate, endDate);
-    const users = db.getAllUsers();
-    res.send(renderRecords({ records, users, startDate, endDate, selectedUser: user }));
+  // ─── Registros ────────────────────────────────────────────────────
+  router.get('/registros', (req, res) => {
+    const from = req.query.from || t.monthStart();
+    const to = req.query.to || t.today();
+    const user = req.query.user || '';
+    const dias = db.getDias(from, to, user || null);
+    res.send(renderRegistros({ dias, users: db.getAllUsers(), from, to, selected: user }));
   });
 
-  // ─── Activity ────────────────────────────────────────────────────
-  router.get('/activity', (req, res) => {
-    const { from, to } = req.query;
-    const startDate = from || t.weekStart();
-    const endDate = to || t.today();
-    const pingSummary = db.getPingSummary(startDate, endDate);
-    const tracked = db.getTrackedUsers();
-    const presenceData = tracked
-      .map(u => ({ ...db.getPresenceSummary(u.slack_id, startDate, endDate), name: u.name, real_name: u.real_name, slack_id: u.slack_id }))
-      .filter(p => p.total_checks > 0);
-    res.send(renderActivity({ pingSummary, presenceData, startDate, endDate }));
+  // ─── Actividad ────────────────────────────────────────────────────
+  router.get('/actividad', (req, res) => {
+    const from = req.query.from || t.weekStart();
+    const to = req.query.to || t.today();
+    const presencia = db.presenciaSummary(from, to);
+    // Pings solo se muestran si hubo modo dirigido en el rango
+    const huboPings = db.getPingModosEnRango(from, to);
+    const pings = huboPings ? db.pingSummary(from, to) : [];
+    res.send(renderActividad({ presencia, pings, huboPings, from, to }));
   });
 
-  // ─── Users ───────────────────────────────────────────────────────
-  router.get('/users', (req, res) => {
-    const users = db.getAllUsers();
-    const tracked = db.getTrackedUsers();
-    const admins = db.getAdminUsers();
-    res.send(renderUsers({ users, tracked, admins }));
+  // ─── Usuarios ─────────────────────────────────────────────────────
+  router.get('/usuarios', (_req, res) => {
+    res.send(renderUsuarios({ users: db.getAllUsers() }));
   });
 
-  // PIN is now per-user, no global API needed
-
-  // ─── JSON APIs ───────────────────────────────────────────────────
-  router.get('/api/records', (req, res) => {
-    const { from, to, user } = req.query;
-    const startDate = from || t.monthStart();
-    const endDate = to || t.today();
-    const records = user ? db.getUserRecordsByDateRange(user, startDate, endDate) : db.getRecordsByDateRange(startDate, endDate);
-    res.json({ records, startDate, endDate });
-  });
-
-  router.get('/api/summary', (req, res) => {
-    const { from, to } = req.query;
-    const startDate = from || t.weekStart();
-    const endDate = to || t.today();
-    res.json({ summary: db.getWeeklySummary(startDate, endDate), startDate, endDate });
-  });
-
-  // ─── Personas overview ───────────────────────────────────────────
-  router.get('/personas', (req, res) => {
-    const EXPECTED = parseFloat(process.env.EXPECTED_HOURS_PER_DAY || '8');
-    const weekStart = t.weekStart();
-    const monthStart = t.monthStart();
-    const today = t.today();
-    const tracked = db.getTrackedUsers();
-
-    const userStats = tracked.map(u => {
-      const weekRec   = db.getUserWeeklyRecords(u.slack_id, weekStart, today);
-      const monthRec  = db.getUserRecordsByDateRange(u.slack_id, monthStart, today);
-      const weekHours = Math.round(weekRec.reduce((s, r) => s + (r.total_hours || 0), 0) * 10) / 10;
-      const monthHours= Math.round(monthRec.reduce((s, r) => s + (r.total_hours || 0), 0) * 10) / 10;
-      const weekExp   = Math.round(db.countWorkdaysInRange(weekStart, today) * EXPECTED * 10) / 10;
-      const monthExp  = Math.round(db.countWorkdaysInRange(monthStart, today) * EXPECTED * 10) / 10;
-      const presentDays = monthRec.filter(r => r.entry_time).length;
-      const missedDays  = db.countMissedDays(u.slack_id, monthStart, today);
-      const officeDays  = monthRec.filter(r => r.location === 'agencia' || r.location === 'office').length;
-      const homeDays    = monthRec.filter(r => r.location === 'home_office' || r.location === 'remote').length;
-      const leaves      = db.getUserLeaveRequests(u.slack_id, 50);
-      const pendingLeaves = leaves.filter(l => l.status === 'pending').length;
-      const monthWorkdays = db.countWorkdaysInRange(monthStart, today);
-      const attendance  = monthWorkdays > 0 ? Math.round((presentDays / monthWorkdays) * 100) : 0;
-      const entryTimes  = monthRec.filter(r => r.entry_time).map(r => { const [h, m] = r.entry_time.split(':').map(Number); return h * 60 + m; });
-      const avgEntryMin = entryTimes.length ? entryTimes.reduce((s, x) => s + x, 0) / entryTimes.length : null;
-      const avgEntry    = avgEntryMin !== null ? `${String(Math.floor(avgEntryMin/60)).padStart(2,'0')}:${String(Math.round(avgEntryMin%60)).padStart(2,'0')}` : '—';
-      return { ...u, weekHours, weekExp, monthHours, monthExp, presentDays, missedDays, officeDays, homeDays, pendingLeaves, attendance, avgEntry };
-    });
-    res.send(renderPersonas({ userStats, weekStart, monthStart, today }));
-  });
-
-  // ─── Persona detail ──────────────────────────────────────────────
-  router.get('/personas/:slackId', (req, res) => {
-    const { slackId } = req.params;
-    const user = db.getUser(slackId);
-    if (!user) { res.status(404).send('Usuario no encontrado'); return; }
-    const EXPECTED = parseFloat(process.env.EXPECTED_HOURS_PER_DAY || '8');
-    const weekStart  = t.weekStart();
-    const monthStart = t.monthStart();
-    const today      = t.today();
-
-    const weekRec    = db.getUserWeeklyRecords(slackId, weekStart, today);
-    const monthRec   = db.getUserRecordsByDateRange(slackId, monthStart, today);
-    const leaves     = db.getUserLeaveRequests(slackId, 30);
-    const missedDays = db.countMissedDays(slackId, monthStart, today);
-    const officeDays = monthRec.filter(r => r.location === 'agencia' || r.location === 'office').length;
-    const homeDays   = monthRec.filter(r => r.location === 'home_office' || r.location === 'remote').length;
-    const weekHours  = Math.round(weekRec.reduce((s, r) => s + (r.total_hours || 0), 0) * 10) / 10;
-    const monthHours = Math.round(monthRec.reduce((s, r) => s + (r.total_hours || 0), 0) * 10) / 10;
-    const weekExp    = Math.round(db.countWorkdaysInRange(weekStart, today) * EXPECTED * 10) / 10;
-    const monthExp   = Math.round(db.countWorkdaysInRange(monthStart, today) * EXPECTED * 10) / 10;
-    const entryTimes = monthRec.filter(r => r.entry_time).map(r => { const [h, m] = r.entry_time.split(':').map(Number); return h * 60 + m; });
-    const avgEntryMin= entryTimes.length ? entryTimes.reduce((s, x) => s + x, 0) / entryTimes.length : null;
-    const avgEntry   = avgEntryMin !== null ? `${String(Math.floor(avgEntryMin/60)).padStart(2,'0')}:${String(Math.round(avgEntryMin%60)).padStart(2,'0')}` : '—';
-    const monthWorkdays = db.countWorkdaysInRange(monthStart, today);
-    const attendance = monthWorkdays > 0 ? Math.round((monthRec.filter(r=>r.entry_time).length / monthWorkdays) * 100) : 0;
-
-    res.send(renderPersonaDetail({ user, weekRec, monthRec, leaves, weekHours, weekExp, monthHours, monthExp, missedDays, officeDays, homeDays, avgEntry, attendance, today, weekStart, monthStart, EXPECTED }));
-  });
-
-  // ─── Ausencias ───────────────────────────────────────────────────
-  router.get('/ausencias', (req, res) => {
-    const from = req.query.from || dayjs().subtract(30, 'day').format('YYYY-MM-DD');
-    const to   = req.query.to   || dayjs().add(60, 'day').format('YYYY-MM-DD');
-    const status = req.query.status || '';
-    let records = db.getAllLeaveRequests(from, to);
-    if (status) records = records.filter(r => r.status === status);
-    const pending = records.filter(r => r.status === 'pending').length;
-    res.send(renderAusencias({ records, from, to, status, pending }));
-  });
-
-  boltApp.receiver.app.use('/dashboard', router);
-
-  // ═══════════════════════════════════════════════════════════════════
-  // VERIFICATION ROUTES (mounted at root, not under /dashboard)
-  // ═══════════════════════════════════════════════════════════════════
-
-  const verifyRouter = express.Router();
-  verifyRouter.use(express.urlencoded({ extended: true }));
-
-  // GET /verify/:token — Check desktop, show PIN form
-  verifyRouter.get('/:token', (req, res) => {
-    const { token } = req.params;
-    const ua = req.headers['user-agent'] || '';
-
-    if (verify.isMobileUA(ua)) {
-      res.send(renderVerifyError('Dispositivo no permitido', 'Este registro solo funciona desde un navegador de escritorio. Abrí el link desde tu computadora.'));
-      return;
-    }
-
-    const peek = verify.peekToken(token);
-    if (!peek) {
-      res.send(renderVerifyError('Link expirado', 'Este link ya fue usado o expiró. Generá uno nuevo con /marcar en Slack.'));
-      return;
-    }
-    const slackId = peek.slackId;
-
-    const today = t.today();
-    const user = db.getUser(slackId);
-    const record = db.getOrCreateRecord(slackId, today);
-    const nextAction = getNextAction(record);
-    const clientIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || '';
-
-    if (!nextAction) {
-      res.send(renderVerifySuccess({ user, record, action_type: null, time: null, alreadyComplete: true }));
-      return;
-    }
-
-    res.send(renderVerifyForm({ token, user, record, today, nextAction, clientIp }));
-  });
-
-  // POST /verify/:token — Verify PIN + register with server time
-  verifyRouter.post('/:token', (req, res) => {
-    const { token } = req.params;
-    const { pin } = req.body;
-    const ua = req.headers['user-agent'] || '';
-
-    if (verify.isMobileUA(ua)) {
-      res.send(renderVerifyError('Dispositivo no permitido', 'Este registro solo funciona desde un navegador de escritorio.'));
-      return;
-    }
-
-    // consumeToken verifies PIN + token in one step
-    const slackId = verify.consumeToken(token, pin);
-    if (!slackId) {
-      res.send(renderVerifyError('Link o PIN incorrecto', 'El link expiró, ya fue usado, o el PIN no coincide. Generá uno nuevo con /marcar en Slack.'));
-      return;
-    }
-
-    const today = t.today();
-    const time = t.currentTime();
-    const record = db.getOrCreateRecord(slackId, today);
-    const nextAction = getNextAction(record);
-
-    if (!nextAction) {
-      const user = db.getUser(slackId);
-      res.send(renderVerifySuccess({ user, record, action_type: null, time, alreadyComplete: true }));
-      return;
-    }
-
-    // Validate mandatory location on entry
-    if (nextAction === 'entry_time') {
-      const loc = req.body.location;
-      if (!['agencia', 'home_office'].includes(loc)) {
-        res.send(renderVerifyError('Falta el lugar de trabajo', 'Tenés que indicar si estás en la Agencia o en Home Office para registrar tu entrada.'));
-        return;
-      }
-    }
-
-    try {
-      const updated = db.updateField(slackId, today, nextAction, time);
-      db.updateLastSeen(slackId, today, time);
-
-      if (nextAction === 'entry_time') {
-        db.setLocation(slackId, today, req.body.location);
-      }
-
-      const user = db.getUser(slackId);
-      res.send(renderVerifySuccess({ user, record: updated, action_type: nextAction, time, alreadyComplete: false }));
-    } catch (err) {
-      res.send(renderVerifyError('Error', err.message));
-    }
-  });
-
-  boltApp.receiver.app.use('/verify', verifyRouter);
-
-  console.log('[dashboard] Available at /dashboard');
-  console.log('[verify] Verification routes at /verify/:token');
+  receiver.app.use('/dashboard', router);
+  console.log('[dashboard] Disponible en /dashboard');
 };
 
-// ═══════════════════════════════════════════════════════════════════
-// STYLES
-// ═══════════════════════════════════════════════════════════════════
+// ─── Renders ────────────────────────────────────────────────────────
 
-const STYLES = `
-<style>
-  :root {
-    --bg: #0f1117; --surface: #1a1d27; --surface-2: #232736;
-    --border: #2d3145; --text: #e2e4ea; --text-muted: #8b8fa3;
-    --accent: #6c5ce7; --accent-light: #a29bfe;
-    --green: #00b894; --yellow: #fdcb6e; --red: #ff6b6b; --orange: #e17055;
-  }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: 'JetBrains Mono', monospace; background: var(--bg); color: var(--text); line-height: 1.6; }
-  .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
-  header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: 1rem; }
-  header h1 { font-size: 1.5rem; font-weight: 600; color: var(--accent-light); letter-spacing: -0.02em; }
-  header nav a { color: var(--text-muted); text-decoration: none; margin-left: 1.5rem; font-size: 0.85rem; transition: color 0.2s; }
-  header nav a:hover, header nav a.active { color: var(--accent-light); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; }
-  .card h3 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 0.5rem; }
-  .card .value { font-size: 2rem; font-weight: 700; }
-  .card .value.green { color: var(--green); } .card .value.yellow { color: var(--yellow); } .card .value.red { color: var(--red); }
-  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-  th { text-align: left; padding: 0.75rem 1rem; color: var(--text-muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 1px solid var(--border); font-weight: 500; }
-  td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); }
-  tr:hover { background: var(--surface-2); }
-  .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 500; }
-  .badge.complete { background: rgba(0,184,148,0.15); color: var(--green); }
-  .badge.partial { background: rgba(253,203,110,0.15); color: var(--yellow); }
-  .badge.missing { background: rgba(255,107,107,0.15); color: var(--red); }
-  .badge.admin { background: rgba(108,92,231,0.15); color: var(--accent-light); }
-  .badge.tracked { background: rgba(0,184,148,0.15); color: var(--green); }
-  .badge.office { background: rgba(0,184,148,0.15); color: var(--green); }
-  .badge.remote { background: rgba(253,203,110,0.15); color: var(--yellow); }
-  .badge.pending  { background: rgba(253,203,110,0.15); color: var(--yellow); }
-  .badge.approved { background: rgba(0,184,148,0.15); color: var(--green); }
-  .badge.rejected { background: rgba(255,107,107,0.15); color: var(--red); }
-  .filters { display: flex; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap; align-items: end; }
-  .filters label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); display: block; margin-bottom: 0.25rem; }
-  .filters input, .filters select { background: var(--surface); border: 1px solid var(--border); color: var(--text); padding: 0.5rem 0.75rem; border-radius: 4px; font-family: inherit; font-size: 0.85rem; }
-  .filters button { background: var(--accent); color: white; border: none; padding: 0.5rem 1.25rem; border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 0.85rem; }
-  .filters button:hover { opacity: 0.85; }
-  .empty { color: var(--text-muted); text-align: center; padding: 3rem; }
-  .progress { background: var(--surface-2); border-radius: 4px; height: 8px; overflow: hidden; margin-top: 0.25rem; }
-  .progress-bar { height: 100%; border-radius: 4px; transition: width 0.3s; }
-  .progress-bar.green { background: var(--green); } .progress-bar.yellow { background: var(--yellow); } .progress-bar.red { background: var(--red); }
-
-  /* PIN display */
-  .pin-box { background: var(--surface); border: 2px solid var(--accent); border-radius: 12px; padding: 1.5rem; text-align: center; }
-  .pin-code { font-size: 3rem; font-weight: 700; color: var(--accent-light); letter-spacing: 0.5em; margin: 0.5rem 0; }
-  .pin-ttl { font-size: 0.8rem; color: var(--text-muted); }
-
-  /* Verify page */
-  .verify-container { max-width: 480px; margin: 4rem auto; padding: 2rem; }
-  .verify-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 2rem; }
-  .verify-card h2 { font-size: 1.2rem; color: var(--accent-light); margin-bottom: 1.5rem; text-align: center; }
-  .form-group { margin-bottom: 1.25rem; }
-  .form-group label { display: block; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 0.4rem; }
-  .form-group select, .form-group input { width: 100%; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); padding: 0.6rem 0.75rem; border-radius: 6px; font-family: inherit; font-size: 0.9rem; }
-  .form-group input.pin-input { font-size: 1.8rem; text-align: center; letter-spacing: 0.5em; font-weight: 700; padding: 0.75rem; }
-  .btn-primary { width: 100%; background: var(--accent); color: white; border: none; padding: 0.75rem; border-radius: 6px; font-family: inherit; font-size: 1rem; font-weight: 600; cursor: pointer; margin-top: 0.5rem; }
-  .btn-primary:hover { opacity: 0.9; }
-  .btn-secondary { width: 100%; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); padding: 0.75rem; border-radius: 6px; font-family: inherit; font-size: 0.9rem; cursor: pointer; margin-top: 0.5rem; }
-  .btn-secondary:hover { background: var(--border); }
-  .status-row { display: flex; justify-content: space-between; padding: 0.4rem 0; font-size: 0.85rem; border-bottom: 1px solid var(--border); }
-  .status-row:last-child { border-bottom: none; }
-  .error-box { background: rgba(255,107,107,0.1); border: 1px solid var(--red); border-radius: 8px; padding: 2rem; text-align: center; }
-  .error-box h2 { color: var(--red); margin-bottom: 0.5rem; }
-  .success-box { background: rgba(0,184,148,0.1); border: 1px solid var(--green); border-radius: 8px; padding: 2rem; text-align: center; }
-  .success-box h2 { color: var(--green); margin-bottom: 0.5rem; }
-  .or-divider { text-align: center; color: var(--text-muted); font-size: 0.8rem; margin: 0.75rem 0; }
-</style>
-`;
-
-const layout = (title, nav, body) => `
-<!DOCTYPE html><html lang="es"><head>
-  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${title} — Hoopla Asistencia</title>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  ${STYLES}
-</head><body><div class="container">
-  <header>
-    <h1>⚡ hoopla::asistencia</h1>
-    <nav>
-      <a href="/dashboard" class="${nav === 'home' ? 'active' : ''}">Dashboard</a>
-      <a href="/dashboard/records" class="${nav === 'records' ? 'active' : ''}">Registros</a>
-      <a href="/dashboard/activity" class="${nav === 'activity' ? 'active' : ''}">Actividad</a>
-      <a href="/dashboard/users" class="${nav === 'users' ? 'active' : ''}">Usuarios</a>
-      <a href="/dashboard/ausencias" class="${nav === 'ausencias' ? 'active' : ''}">Ausencias</a>
-      <a href="/dashboard/personas" class="${nav === 'personas' ? 'active' : ''}">Personas</a>
-    </nav>
-  </header>
-  ${body}
-</div></body></html>`;
-
-const miniLayout = (title, body) => `
-<!DOCTYPE html><html lang="es"><head>
-  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${title} — Hoopla Asistencia</title>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  ${STYLES}
-</head><body><div class="verify-container">${body}</div></body></html>`;
-
-const locationBadge = (location) => {
-  if (location === 'agencia' || location === 'office') return '<span class="badge office">🏢 Agencia</span>';
-  if (location === 'home_office' || location === 'remote') return '<span class="badge remote">🏠 Home Office</span>';
-  return '<span style="color:var(--text-muted)">—</span>';
+const flagsCell = (d) => {
+  const f = [];
+  if (d.tarde_min > 0) f.push(`<span class="badge missing">+${d.tarde_min}' tarde</span>`);
+  if (d.anticipado_min > 0) f.push(`<span class="badge partial">−${d.anticipado_min}' antic.</span>`);
+  if (d.auto_closed) f.push(`<span class="badge auto">${d.corregido ? `auto → corregida (era ${d.valor_original})` : 'auto sin respuesta'}</span>`);
+  if (d.origen === 'mobile_remoto') f.push('<span class="badge remoto">📱 remoto</span>');
+  return f.join(' ') || '—';
 };
 
-const locationIcon = (location) => {
-  if (location === 'agencia' || location === 'office') return '🏢';
-  if (location === 'home_office' || location === 'remote') return '🏠';
-  return '';
-};
+const filaDia = (d, conFecha) => `
+  <tr>
+    ${conFecha ? `<td>${t.fmtDate(d.fecha)}</td>` : ''}
+    <td>${d.nombre}</td>
+    <td>${d.entrada || '—'}</td>
+    <td>${d.almuerzo_inicio || '—'} – ${d.almuerzo_fin || '—'}</td>
+    <td>${d.salida || '—'}</td>
+    <td>${d.horas != null ? d.horas + 'hs' : '—'}</td>
+    <td>${flagsCell(d)}</td>
+    <td><span class="badge ${d.salida ? 'complete' : 'partial'}">${d.salida ? 'Completo' : 'En curso'}</span></td>
+  </tr>`;
 
-// ═══════════════════════════════════════════════════════════════════
-// DASHBOARD HOME (with PIN)
-// ═══════════════════════════════════════════════════════════════════
+const renderHoy = ({ hoy, dias, tracked, falt, novedades }) => {
+  const completos = dias.filter(d => d.salida).length;
+  const horasEquipo = Math.round(dias.reduce((s, d) => s + (d.horas || 0), 0) * 10) / 10;
 
-const renderDashboard = ({ todayRecords, missing, weeklySummary, users, tracked, today }) => {
-  const presentCount = todayRecords.length;
-  const completeCount = todayRecords.filter(r => r.exit_time).length;
-  const weeklyHours = weeklySummary.reduce((sum, r) => sum + (r.total_hours || 0), 0);
+  const faltRows = falt.map(u => `<tr><td>${u.nombre}</td><td>${u.hora_entrada}</td><td><span class="badge missing">Sin registro</span></td></tr>`).join('');
+  const novRows = novedades.map(n => `<tr><td>${txt.NOVEDADES[n.tipo] || n.tipo}</td><td>${n.nombre || 'Todos'}</td><td>${n.motivo || '—'}</td></tr>`).join('');
 
-  const todayRows = todayRecords.map(r => `
-    <tr>
-      <td>${r.real_name || r.name}</td><td>${r.entry_time || '—'}</td>
-      <td>${r.lunch_start || '—'} – ${r.lunch_end || '—'}</td>
-      <td>${r.exit_time || '—'}</td><td>${r.total_hours ? r.total_hours + 'hs' : '—'}</td>
-      <td>${locationBadge(r.location)}</td>
-      <td><span class="badge ${r.exit_time ? 'complete' : 'partial'}">${r.exit_time ? 'Completo' : 'En curso'}</span></td>
-    </tr>`).join('');
-
-  const missingRows = missing.map(u => `
-    <tr><td>${u.real_name || u.name}</td><td><span class="badge missing">Sin registro</span></td></tr>`).join('');
-
-  return layout('Dashboard', 'home', `
+  return layout('Hoy', 'hoy', `
     <div class="grid">
+      <div class="card"><h3>Presentes</h3><div class="value green">${dias.filter(d => d.entrada).length}</div></div>
+      <div class="card"><h3>Faltantes</h3><div class="value ${falt.length ? 'red' : 'green'}">${falt.length}</div></div>
+      <div class="card"><h3>Jornada completa</h3><div class="value ${completos === dias.length && dias.length ? 'green' : 'yellow'}">${completos}</div></div>
+      <div class="card"><h3>Horas del equipo</h3><div class="value">${horasEquipo}</div></div>
       <div class="card"><h3>Trackeados</h3><div class="value">${tracked.length}</div></div>
-      <div class="card"><h3>Presentes hoy</h3><div class="value green">${presentCount}</div></div>
-      <div class="card"><h3>Jornada completa</h3><div class="value ${completeCount === presentCount ? 'green' : 'yellow'}">${completeCount}</div></div>
-      <div class="card"><h3>Sin registro</h3><div class="value ${missing.length > 0 ? 'red' : 'green'}">${missing.length}</div></div>
-      <div class="card"><h3>Horas equipo (semana)</h3><div class="value">${Math.round(weeklyHours * 10) / 10}</div></div>
     </div>
-
     <div class="card" style="margin-bottom:1.5rem">
-      <h3>Hoy — ${dayjs(today).format('DD/MM/YYYY')}</h3>
-      ${todayRecords.length > 0 ? `
-        <table><thead><tr><th>Persona</th><th>Entrada</th><th>Almuerzo</th><th>Salida</th><th>Horas</th><th>Lugar</th><th>Estado</th></tr></thead>
-        <tbody>${todayRows}</tbody></table>
-      ` : '<p class="empty">No hay registros para hoy</p>'}
+      <h3>Hoy — ${t.fmtDate(hoy)}</h3>
+      ${dias.length ? `<table><thead><tr><th>Persona</th><th>Entrada</th><th>Almuerzo</th><th>Salida</th><th>Horas</th><th>Flags</th><th>Estado</th></tr></thead>
+        <tbody>${dias.map(d => filaDia(d, false)).join('')}</tbody></table>` : '<p class="empty">Sin registros por ahora</p>'}
     </div>
-
-    ${missing.length > 0 ? `<div class="card"><h3>⚠️ Faltantes</h3>
-      <table><thead><tr><th>Persona</th><th>Estado</th></tr></thead><tbody>${missingRows}</tbody></table>
-    </div>` : ''}
+    ${falt.length ? `<div class="card" style="margin-bottom:1.5rem"><h3>⚠️ Faltantes (sin novedad)</h3>
+      <table><thead><tr><th>Persona</th><th>Su entrada</th><th>Estado</th></tr></thead><tbody>${faltRows}</tbody></table></div>` : ''}
+    ${novedades.length ? `<div class="card"><h3>📋 Novedades de hoy</h3>
+      <table><thead><tr><th>Tipo</th><th>Persona</th><th>Motivo</th></tr></thead><tbody>${novRows}</tbody></table></div>` : ''}
   `);
 };
 
-// ═══════════════════════════════════════════════════════════════════
-// RECORDS PAGE
-// ═══════════════════════════════════════════════════════════════════
-
-const renderRecords = ({ records, users, startDate, endDate, selectedUser }) => {
-  const userOpts = users.map(u =>
-    `<option value="${u.slack_id}" ${selectedUser === u.slack_id ? 'selected' : ''}>${u.real_name || u.name}</option>`
-  ).join('');
-  const rows = records.map(r => {
-    const st = r.exit_time ? 'complete' : (r.entry_time ? 'partial' : 'missing');
-    const lb = r.exit_time ? 'Completo' : (r.entry_time ? 'Parcial' : 'Sin datos');
-    return `<tr><td>${dayjs(r.date).format('DD/MM/YYYY')}</td><td>${r.real_name || r.name}</td>
-      <td>${r.entry_time || '—'}</td><td>${r.lunch_start || '—'}</td><td>${r.lunch_end || '—'}</td>
-      <td>${r.exit_time || '—'}</td><td>${r.total_hours ? r.total_hours + 'hs' : '—'}</td>
-      <td>${locationBadge(r.location)}</td>
-      <td><span class="badge ${st}">${lb}</span></td></tr>`;
-  }).join('');
-  return layout('Registros', 'records', `
-    <form class="filters" method="GET" action="/dashboard/records">
-      <div><label>Desde</label><input type="date" name="from" value="${startDate}"></div>
-      <div><label>Hasta</label><input type="date" name="to" value="${endDate}"></div>
-      <div><label>Persona</label><select name="user"><option value="">Todas</option>${userOpts}</select></div>
-      <button type="submit">Filtrar</button>
-    </form>
-    <div class="card">${records.length > 0 ? `<table><thead><tr>
-      <th>Fecha</th><th>Persona</th><th>Entrada</th><th>Almuerzo ini</th><th>Almuerzo fin</th><th>Salida</th><th>Horas</th><th>Lugar</th><th>Estado</th>
-    </tr></thead><tbody>${rows}</tbody></table>` : '<p class="empty">No hay registros</p>'}</div>`);
-};
-
-// ═══════════════════════════════════════════════════════════════════
-// ACTIVITY PAGE
-// ═══════════════════════════════════════════════════════════════════
-
-const renderActivity = ({ pingSummary, presenceData, startDate, endDate }) => {
-  const pingRows = pingSummary.map(r => {
-    const rate = r.total_pings > 0 ? Math.round((r.responded / r.total_pings) * 100) : 0;
-    const avg = r.avg_response_ms ? Math.round(r.avg_response_ms / 1000) : '—';
-    const c = rate >= 70 ? 'green' : rate >= 50 ? 'yellow' : 'red';
-    return `<tr><td>${r.real_name || r.name}</td><td>${r.total_pings}</td><td>${r.responded}</td><td>${r.missed}</td>
-      <td>${rate}% <div class="progress"><div class="progress-bar ${c}" style="width:${rate}%"></div></div></td><td>${avg}s</td></tr>`;
-  }).join('');
-  const presRows = presenceData.map(r => {
-    const p = r.active_pct || 0; const c = p >= 70 ? 'green' : p >= 50 ? 'yellow' : 'red';
-    return `<tr><td>${r.real_name || r.name}</td><td>${r.total_checks}</td><td>${r.active_count}</td><td>${r.away_count}</td>
-      <td>${p}% <div class="progress"><div class="progress-bar ${c}" style="width:${p}%"></div></div></td></tr>`;
-  }).join('');
-  return layout('Actividad', 'activity', `
-    <form class="filters" method="GET" action="/dashboard/activity">
-      <div><label>Desde</label><input type="date" name="from" value="${startDate}"></div>
-      <div><label>Hasta</label><input type="date" name="to" value="${endDate}"></div>
-      <button type="submit">Filtrar</button>
-    </form>
-    <div class="card" style="margin-bottom:1.5rem"><h3>🏓 Pings de actividad</h3>
-      ${pingSummary.length > 0 ? `<table><thead><tr><th>Persona</th><th>Enviados</th><th>OK</th><th>Perdidos</th><th>Tasa</th><th>Promedio</th></tr></thead><tbody>${pingRows}</tbody></table>` : '<p class="empty">Sin datos</p>'}
-    </div>
-    <div class="card"><h3>👁️ Presencia Slack</h3>
-      ${presenceData.length > 0 ? `<table><thead><tr><th>Persona</th><th>Checks</th><th>Active</th><th>Away</th><th>Presencia</th></tr></thead><tbody>${presRows}</tbody></table>` : '<p class="empty">Sin datos</p>'}
-    </div>`);
-};
-
-// ═══════════════════════════════════════════════════════════════════
-// USERS PAGE
-// ═══════════════════════════════════════════════════════════════════
-
-const renderUsers = ({ users, tracked, admins }) => {
-  const tIds = new Set(tracked.map(u => u.slack_id));
-  const aIds = new Set(admins.map(u => u.slack_id));
-  const rows = users.map(u => {
-    const b = [];
-    if (aIds.has(u.slack_id)) b.push('<span class="badge admin">Admin</span>');
-    if (tIds.has(u.slack_id)) b.push('<span class="badge tracked">Trackeado</span>');
-    return `<tr><td>${u.real_name || u.name}</td><td style="font-size:0.75rem;color:var(--text-muted)">${u.slack_id}</td>
-      <td>${b.join(' ') || '—'}</td><td style="font-size:0.75rem;color:var(--text-muted)">${u.created_at || '—'}</td></tr>`;
-  }).join('');
-  return layout('Usuarios', 'users', `
-    <div class="grid">
-      <div class="card"><h3>Total</h3><div class="value">${users.length}</div></div>
-      <div class="card"><h3>Trackeados</h3><div class="value green">${tracked.length}</div></div>
-      <div class="card"><h3>Admins</h3><div class="value" style="color:var(--accent-light)">${admins.length}</div></div>
-    </div>
-    <div class="card"><h3>Todos los usuarios</h3>
-      <p style="font-size:0.8rem;color:var(--text-muted);margin-bottom:1rem">Gestión: <code>/admin agregar @usuario</code> · <code>/admin sacar @usuario</code></p>
-      ${users.length > 0 ? `<table><thead><tr><th>Nombre</th><th>Slack ID</th><th>Rol</th><th>Desde</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="empty">Sin usuarios</p>'}
-    </div>`);
-};
-
-// ═══════════════════════════════════════════════════════════════════
-// VERIFICATION PAGES
-// ═══════════════════════════════════════════════════════════════════
-
-const STATUS_LABELS = {
-  entry_time: '🟢 Entrada',
-  lunch_start: '🍽️ Inicio almuerzo',
-  lunch_end: '🔄 Fin almuerzo',
-  exit_time: '🔴 Salida',
-};
-
-const renderVerifyForm = ({ token, user, record, today, nextAction, clientIp }) => {
-  const name = user?.real_name || user?.name || 'Usuario';
-  const nextLabel = STATUS_LABELS[nextAction];
-
-  const statusRows = Object.entries(STATUS_LABELS).map(([field, label]) =>
-    `<div class="status-row"><span>${label}</span><span>${record[field] || '—'}</span></div>`
-  ).join('');
-
-  const locationSelect = nextAction === 'entry_time' ? `
-    <div class="form-group" style="margin-bottom:1.25rem;">
-      <label>¿Desde dónde trabajás hoy? <span style="color:var(--red)">*</span></label>
-      <select name="location" required style="font-size:1rem;cursor:pointer;">
-        <option value="" disabled selected>Seleccioná una opción…</option>
-        <option value="agencia">🏢 Agencia</option>
-        <option value="home_office">🏠 Home Office</option>
-      </select>
-    </div>` : '';
-
-  const ipInfo = nextAction === 'entry_time' ? `
-    <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1.25rem;padding:0.6rem 0.75rem;background:var(--surface-2);border-radius:6px;font-size:0.78rem;color:var(--text-muted);">
-      <span>📡</span>
-      <span>IP detectada: <code style="color:var(--accent-light);font-size:0.82rem;">${clientIp || 'Desconocida'}</code></span>
-    </div>` : '';
-
-  return miniLayout('Registrar asistencia', `
-    <div class="verify-card">
-      <h2>📋 ${name}</h2>
-      <p style="text-align:center;color:var(--text-muted);font-size:0.85rem;margin-bottom:1.25rem">${dayjs(today).format('DD/MM/YYYY')}</p>
-
-      <div style="margin-bottom:1.25rem">${statusRows}</div>
-
-      ${record.auto_closed ? `<div style="text-align:center;margin-bottom:1rem;padding:0.5rem;background:rgba(253,203,110,0.15);border:1px solid var(--yellow);border-radius:6px;font-size:0.85rem;color:var(--yellow);">
-        ⚠️ Tu salida fue cerrada automáticamente a las ${record.exit_time}. Podés corregirla ahora.
-      </div>` : ''}
-
-      <div style="text-align:center;margin-bottom:1.25rem;padding:0.75rem;background:var(--surface-2);border-radius:6px;">
-        <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;">${record.auto_closed ? 'Corrigiendo' : 'Registrando'}</span><br>
-        <span style="font-size:1.2rem;font-weight:600;">${nextLabel}</span>
-      </div>
-
-      <form method="POST" action="/verify/${token}">
-        ${locationSelect}
-        ${ipInfo}
-        <div class="form-group">
-          <label>Ingresá el PIN que te apareció en Slack</label>
-          <input type="text" name="pin" class="pin-input" maxlength="4" pattern="[0-9]{4}" placeholder="0000" required autocomplete="off" inputmode="numeric">
-        </div>
-        <button type="submit" class="btn-primary">✅ Registrar ${nextLabel}</button>
-      </form>
-    </div>`);
-};
-
-const renderVerifyError = (title, message) => miniLayout('Error', `
-  <div class="error-box">
-    <h2>❌ ${title}</h2>
-    <p style="margin-top:0.75rem">${message}</p>
-  </div>`);
-
-const renderVerifySuccess = ({ user, record, action_type, time, alreadyComplete }) => {
-  const name = user?.real_name || user?.name || 'Usuario';
-  const slackId = user?.slack_id;
-  const today = t.today();
-  const EXPECTED = parseFloat(process.env.EXPECTED_HOURS_PER_DAY || '8');
-
-  // Build today's status
-  const statusRows = Object.entries(STATUS_LABELS).map(([field, lb]) =>
-    `<div class="status-row"><span>${lb}</span><span style="${field === action_type ? 'color:var(--green);font-weight:700' : ''}">${record[field] || '—'}</span></div>`
-  ).join('');
-
-  // Weekly breakdown
-  const weekStart = t.weekStart();
-  const weekRecords = slackId ? db.getUserWeeklyRecords(slackId, weekStart, today) : [];
-  const dayNames = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
-
-  let weeklyHtml = '';
-  let totalWorked = 0;
-
-  if (weekRecords.length > 0) {
-    const dayRows = weekRecords.map(r => {
-      const hrs = r.total_hours || 0;
-      totalWorked += hrs;
-      const dayNum = t.dayjs(r.date).day();
-      const dayLabel = dayNames[dayNum];
-      const dateLabel = t.dayjs(r.date).format('DD/MM');
-      const isField = r.work_mode === 'field';
-      const wasAuto = r.auto_closed === 1;
-
-      let statusIcon, statusColor, comment;
-      if (hrs >= EXPECTED) {
-        statusIcon = '🟢'; statusColor = 'var(--green)'; comment = 'Perfecto';
-      } else if (hrs >= EXPECTED - 1) {
-        statusIcon = '🟡'; statusColor = 'var(--yellow)'; comment = `${Math.round((EXPECTED - hrs) * 60)} min pendientes`;
-      } else if (hrs > 0) {
-        statusIcon = '🔴'; statusColor = 'var(--red)'; comment = `${Math.round((EXPECTED - hrs) * 10) / 10}hs pendientes`;
-      } else {
-        statusIcon = '⚪'; statusColor = 'var(--text-muted)'; comment = 'Sin registro';
-      }
-
-      if (isField) comment = `🎬 Campo — ${comment}`;
-      if (wasAuto) comment += ' (auto)';
-      const locIcon = locationIcon(r.location);
-
-      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:0.5rem 0;border-bottom:1px solid var(--border);font-size:0.85rem;">
-        <span>${statusIcon} <strong>${dayLabel}</strong> <span style="color:var(--text-muted);font-size:0.78rem">${dateLabel}</span>${locIcon ? ` <span style="font-size:0.82rem;opacity:0.7" title="${r.location}">${locIcon}</span>` : ''}</span>
-        <span style="color:${statusColor};font-weight:600">${hrs > 0 ? hrs + 'hs' : '—'}</span>
-        <span style="color:var(--text-muted);font-size:0.75rem;max-width:35%">${comment}</span>
-      </div>`;
-    }).join('');
-
-    const daysElapsed = db.countWorkdaysInRange(weekStart, today);
-    const expectedTotal = Math.round(daysElapsed * EXPECTED * 10) / 10;
-    totalWorked = Math.round(totalWorked * 10) / 10;
-    const diff = Math.round((totalWorked - expectedTotal) * 10) / 10;
-
-    let balanceColor, balanceIcon, balanceMsg;
-    if (diff >= 0) {
-      balanceColor = 'var(--green)';
-      balanceIcon = '🟢';
-      balanceMsg = diff > 0 ? `Tenés ${diff}hs de más. Excelente.` : 'Justo en horario.';
-    } else {
-      const missing = Math.abs(diff);
-      balanceColor = missing > 2 ? 'var(--red)' : 'var(--yellow)';
-      balanceIcon = missing > 2 ? '🔴' : '🟡';
-      balanceMsg = `Te faltan ${missing}hs. Tenés hasta el viernes para compensar.`;
-    }
-
-    weeklyHtml = `
-      <div class="verify-card" style="margin-top:1rem">
-        <h3 style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:0.75rem;">📅 Tu semana</h3>
-        ${dayRows}
-        <div style="display:flex;justify-content:space-between;padding:0.75rem 0 0.25rem;font-size:0.9rem;font-weight:600;">
-          <span>Total</span>
-          <span style="color:${balanceColor}">${totalWorked}hs / ${expectedTotal}hs</span>
-        </div>
-        <div style="text-align:center;padding:0.75rem;margin-top:0.5rem;background:var(--surface-2);border-radius:6px;font-size:0.9rem;">
-          ${balanceIcon} ${balanceMsg}
-        </div>
-      </div>`;
-  }
-
-  // Today's result message
-  let todayMsg;
-  if (record.total_hours && record.total_hours >= EXPECTED) {
-    todayMsg = '💪 Gran día. Cumpliste tu jornada completa.';
-  } else if (record.total_hours && record.total_hours >= EXPECTED - 1) {
-    const pendingMin = Math.round((EXPECTED - record.total_hours) * 60);
-    todayMsg = `Buen día. Te quedaron ${pendingMin} minutos pendientes.`;
-  } else if (record.total_hours) {
-    todayMsg = `Registraste ${record.total_hours}hs hoy.`;
-  }
-
-  if (alreadyComplete) {
-    return miniLayout('Día completo', `
-      <div class="success-box">
-        <h2>✅ Día completo</h2>
-        <p>${name}</p>
-        ${todayMsg ? `<p style="margin-top:0.5rem;font-size:0.9rem">${todayMsg}</p>` : ''}
-      </div>
-      <div class="verify-card" style="margin-top:1rem">${statusRows}</div>
-      ${weeklyHtml}`);
-  }
-
-  const label = STATUS_LABELS[action_type] || action_type;
-
-  return miniLayout('Registrado', `
-    <div class="success-box">
-      <h2>✅ Registrado</h2>
-      <p style="margin-top:0.5rem"><strong>${label}</strong> a las <strong>${time}</strong></p>
-      <p style="color:var(--text-muted);font-size:0.85rem;margin-top:0.25rem">${name} — ${t.now().format('DD/MM/YYYY')}</p>
-    </div>
-    <div class="verify-card" style="margin-top:1rem">${statusRows}</div>
-    ${weeklyHtml}`);
-};
-
-// ═══════════════════════════════════════════════════════════════════
-// PERSONAS PAGE
-// ═══════════════════════════════════════════════════════════════════
-
-const hBar = (val, total, color) => {
-  const pct = total > 0 ? Math.min(100, Math.round((val / total) * 100)) : 0;
-  return `<div class="progress" style="width:60px;display:inline-block;vertical-align:middle;margin-left:4px"><div class="progress-bar ${color}" style="width:${pct}%"></div></div>`;
-};
-
-const diffBadge = (diff) => {
-  const sign = diff >= 0 ? '+' : '';
-  const col = diff >= 0 ? 'var(--green)' : Math.abs(diff) > 4 ? 'var(--red)' : 'var(--yellow)';
-  return `<span style="color:${col};font-size:0.75rem;font-weight:600">${sign}${diff}hs</span>`;
-};
-
-const renderPersonas = ({ userStats, weekStart, monthStart, today }) => {
-  const totalWeekHours  = Math.round(userStats.reduce((s, u) => s + u.weekHours, 0) * 10) / 10;
-  const totalMonthHours = Math.round(userStats.reduce((s, u) => s + u.monthHours, 0) * 10) / 10;
-  const pendingTotal    = userStats.reduce((s, u) => s + u.pendingLeaves, 0);
-
-  const rows = userStats.map(u => {
-    const weekDiff  = Math.round((u.weekHours  - u.weekExp)  * 10) / 10;
-    const monthDiff = Math.round((u.monthHours - u.monthExp) * 10) / 10;
-    const attColor  = u.attendance >= 90 ? 'green' : u.attendance >= 70 ? 'yellow' : 'red';
-    return `<tr>
-      <td><a href="/dashboard/personas/${u.slack_id}" style="color:var(--accent-light);text-decoration:none;font-weight:500">${u.real_name || u.name}</a></td>
-      <td>${u.weekHours}hs ${hBar(u.weekHours, u.weekExp, weekDiff >= 0 ? 'green' : 'red')} ${diffBadge(weekDiff)}</td>
-      <td>${u.monthHours}hs ${hBar(u.monthHours, u.monthExp, monthDiff >= 0 ? 'green' : 'red')} ${diffBadge(monthDiff)}</td>
-      <td style="font-size:0.85rem">${u.presentDays}d presentes</td>
-      <td>${u.missedDays > 0 ? `<span style="color:var(--red);font-weight:600">${u.missedDays}d</span>` : '<span style="color:var(--green)">✓</span>'}</td>
-      <td style="font-size:0.8rem">🏢 ${u.officeDays} · 🏠 ${u.homeDays}</td>
-      <td style="font-size:0.8rem">${u.avgEntry}</td>
-      <td><span class="badge ${attColor === 'green' ? 'complete' : attColor === 'yellow' ? 'partial' : 'missing'}">${u.attendance}%</span></td>
-      <td>${u.pendingLeaves > 0 ? `<span class="badge pending">⏳ ${u.pendingLeaves}</span>` : '—'}</td>
-      <td><a href="/dashboard/personas/${u.slack_id}" style="color:var(--accent-light);font-size:0.8rem">Ver →</a></td>
-    </tr>`;
-  }).join('');
-
-  return layout('Personas', 'personas', `
-    <div class="grid">
-      <div class="card"><h3>Trackeados</h3><div class="value">${userStats.length}</div></div>
-      <div class="card"><h3>Horas equipo esta semana</h3><div class="value">${totalWeekHours}</div></div>
-      <div class="card"><h3>Horas equipo este mes</h3><div class="value">${totalMonthHours}</div></div>
-      <div class="card"><h3>Solicitudes pendientes</h3><div class="value ${pendingTotal > 0 ? 'yellow' : 'green'}">${pendingTotal}</div></div>
-    </div>
-    <div class="card">
-      <h3>👥 Resumen por persona — ${dayjs(monthStart).format('MMMM YYYY')}</h3>
-      <p style="font-size:0.75rem;color:var(--text-muted);margin-bottom:1rem">Semana: ${dayjs(weekStart).format('DD/MM')} – ${dayjs(today).format('DD/MM')} &nbsp;·&nbsp; Mes: ${dayjs(monthStart).format('DD/MM')} – ${dayjs(today).format('DD/MM')}</p>
-      ${userStats.length > 0 ? `<table><thead><tr>
-        <th>Persona</th><th>Esta semana</th><th>Este mes</th><th>Presencias</th><th>Faltas</th><th>Lugar</th><th>Entrada prom.</th><th>Asistencia</th><th>Ausencias</th><th></th>
-      </tr></thead><tbody>${rows}</tbody></table>`
-      : '<p class="empty">No hay usuarios trackeados.</p>'}
-    </div>`);
-};
-
-// ─── Persona detail page ─────────────────────────────────────────────
-
-const renderPersonaDetail = ({ user, weekRec, monthRec, leaves, weekHours, weekExp, monthHours, monthExp, missedDays, officeDays, homeDays, avgEntry, attendance, today, weekStart, monthStart, EXPECTED }) => {
-  const name = user.real_name || user.name;
-  const weekDiff  = Math.round((weekHours  - weekExp)  * 10) / 10;
-  const monthDiff = Math.round((monthHours - monthExp) * 10) / 10;
-  const DAY_NAMES = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
-
-  // ── Week table ──────────────────────────────────────────────────
-  const weekRows = weekRec.map(r => {
-    const hrs  = r.total_hours || 0;
-    const col  = hrs >= EXPECTED ? 'var(--green)' : hrs >= EXPECTED - 1 ? 'var(--yellow)' : hrs > 0 ? 'var(--red)' : 'var(--text-muted)';
-    const icon = hrs >= EXPECTED ? '🟢' : hrs >= EXPECTED - 1 ? '🟡' : hrs > 0 ? '🔴' : '⚪';
-    return `<tr>
-      <td>${icon} <strong>${DAY_NAMES[dayjs(r.date).day()]}</strong> <span style="color:var(--text-muted);font-size:0.8rem">${dayjs(r.date).format('DD/MM')}</span></td>
-      <td>${r.entry_time || '—'}</td><td>${r.lunch_start ? r.lunch_start + ' – ' + (r.lunch_end || '?') : '—'}</td>
-      <td>${r.exit_time || '—'}</td>
-      <td style="color:${col};font-weight:600">${hrs > 0 ? hrs + 'hs' : '—'}</td>
-      <td>${locationBadge(r.location)}</td>
-      <td style="font-size:0.75rem;color:var(--text-muted)">${r.auto_closed ? '(auto)' : ''}</td>
-    </tr>`;
-  }).join('');
-
-  // ── Month table ──────────────────────────────────────────────────
-  const monthRows = [...monthRec].reverse().map(r => {
-    const hrs = r.total_hours || 0;
-    const col = hrs >= EXPECTED ? 'var(--green)' : hrs >= EXPECTED - 1 ? 'var(--yellow)' : hrs > 0 ? 'var(--red)' : 'var(--text-muted)';
-    const st  = r.exit_time ? 'complete' : r.entry_time ? 'partial' : 'missing';
-    const lb  = r.exit_time ? 'Completo' : r.entry_time ? 'Parcial' : 'Sin datos';
-    return `<tr>
-      <td>${DAY_NAMES[dayjs(r.date).day()]} ${dayjs(r.date).format('DD/MM')}</td>
-      <td>${r.entry_time || '—'}</td><td>${r.lunch_start || '—'}</td><td>${r.lunch_end || '—'}</td><td>${r.exit_time || '—'}</td>
-      <td style="color:${col};font-weight:600">${hrs > 0 ? hrs + 'hs' : '—'}</td>
-      <td>${locationBadge(r.location)}</td>
-      <td><span class="badge ${st}">${lb}</span></td>
-    </tr>`;
-  }).join('');
-
-  // ── Leave requests ───────────────────────────────────────────────
-  const leaveLabels = { pending: '⏳ Pendiente', approved: '✅ Aprobada', rejected: '❌ Rechazada' };
-  const leaveRows = leaves.map(l => {
-    const ti = LEAVE_TYPES[l.type] || { emoji: '📋', label: l.type };
-    const period = l.date_from === l.date_to ? dayjs(l.date_from).format('DD/MM/YYYY') : `${dayjs(l.date_from).format('DD/MM')} → ${dayjs(l.date_to).format('DD/MM')}`;
-    return `<tr>
-      <td>${ti.emoji} ${ti.label}</td><td>${period}</td>
-      <td style="font-size:0.8rem;color:var(--text-muted)">${l.notes || '—'}</td>
-      <td><span class="badge ${l.status}">${leaveLabels[l.status] || l.status}</span></td>
-      <td style="font-size:0.75rem;color:var(--text-muted)">${dayjs(l.created_at).format('DD/MM/YY')}</td>
-      ${l.reject_reason ? `<td style="font-size:0.75rem;color:var(--red)">${l.reject_reason}</td>` : '<td>—</td>'}
-    </tr>`;
-  }).join('');
-
-  const attColor = attendance >= 90 ? 'var(--green)' : attendance >= 70 ? 'var(--yellow)' : 'var(--red)';
-
-  return layout(`Personas — ${name}`, 'personas', `
-    <div style="margin-bottom:1.5rem">
-      <a href="/dashboard/personas" style="color:var(--text-muted);text-decoration:none;font-size:0.85rem">← Todas las personas</a>
-    </div>
-    <div style="margin-bottom:1.5rem">
-      <h2 style="font-size:1.4rem;color:var(--accent-light)">${name}</h2>
-      <p style="color:var(--text-muted);font-size:0.8rem">${user.slack_id} · ${dayjs(monthStart).format('MMMM YYYY')}</p>
-    </div>
-
-    <div class="grid">
-      <div class="card">
-        <h3>Esta semana</h3>
-        <div class="value ${weekDiff >= 0 ? 'green' : Math.abs(weekDiff) > 4 ? 'red' : 'yellow'}">${weekHours}hs</div>
-        <div style="font-size:0.8rem;color:var(--text-muted);margin-top:0.25rem">de ${weekExp}hs esperadas (${weekDiff >= 0 ? '+' : ''}${weekDiff}hs)</div>
-      </div>
-      <div class="card">
-        <h3>Este mes</h3>
-        <div class="value ${monthDiff >= 0 ? 'green' : Math.abs(monthDiff) > 8 ? 'red' : 'yellow'}">${monthHours}hs</div>
-        <div style="font-size:0.8rem;color:var(--text-muted);margin-top:0.25rem">de ${monthExp}hs esperadas (${monthDiff >= 0 ? '+' : ''}${monthDiff}hs)</div>
-      </div>
-      <div class="card"><h3>Asistencia</h3><div class="value" style="color:${attColor}">${attendance}%</div></div>
-      <div class="card"><h3>Faltas sin justificar</h3><div class="value ${missedDays > 0 ? 'red' : 'green'}">${missedDays}</div></div>
-      <div class="card"><h3>Hora de entrada prom.</h3><div class="value" style="font-size:1.5rem">${avgEntry}</div></div>
-      <div class="card"><h3>Lugar este mes</h3>
-        <div style="font-size:1rem;margin-top:0.25rem">🏢 ${officeDays}d agencia</div>
-        <div style="font-size:1rem">🏠 ${homeDays}d home office</div>
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom:1.5rem">
-      <h3>📅 Esta semana — ${dayjs(weekStart).format('DD/MM')} al ${dayjs(today).format('DD/MM')}</h3>
-      ${weekRec.length > 0 ? `<table><thead><tr><th>Día</th><th>Entrada</th><th>Almuerzo</th><th>Salida</th><th>Horas</th><th>Lugar</th><th></th></tr></thead><tbody>${weekRows}</tbody></table>`
-      : '<p class="empty">Sin registros esta semana.</p>'}
-    </div>
-
-    <div class="card" style="margin-bottom:1.5rem">
-      <h3>📊 Este mes — ${dayjs(monthStart).format('DD/MM')} al ${dayjs(today).format('DD/MM')}</h3>
-      ${monthRec.length > 0 ? `<table><thead><tr><th>Día</th><th>Entrada</th><th>Almuerzo ini</th><th>Almuerzo fin</th><th>Salida</th><th>Horas</th><th>Lugar</th><th>Estado</th></tr></thead><tbody>${monthRows}</tbody></table>`
-      : '<p class="empty">Sin registros este mes.</p>'}
-    </div>
-
-    <div class="card">
-      <h3>🏖️ Solicitudes de ausencia</h3>
-      ${leaves.length > 0 ? `<table><thead><tr><th>Tipo</th><th>Período</th><th>Nota</th><th>Estado</th><th>Fecha solicitud</th><th>Motivo rechazo</th></tr></thead><tbody>${leaveRows}</tbody></table>`
-      : '<p class="empty">Sin solicitudes.</p>'}
-    </div>`);
-};
-
-// ═══════════════════════════════════════════════════════════════════
-// AUSENCIAS PAGE
-// ═══════════════════════════════════════════════════════════════════
-
-const renderAusencias = ({ records, from, to, status, pending }) => {
-  const statusLabel = { pending: '⏳ Pendiente', approved: '✅ Aprobada', rejected: '❌ Rechazada' };
-  const statusBadge = (s) => `<span class="badge ${s}">${statusLabel[s] || s}</span>`;
-
-  const rows = records.map(r => {
-    const ti = LEAVE_TYPES[r.type] || { emoji: '📋', label: r.type };
-    const name = r.real_name || r.name || r.slack_id;
-    const period = r.date_from === r.date_to
-      ? dayjs(r.date_from).format('DD/MM/YYYY')
-      : `${dayjs(r.date_from).format('DD/MM')} → ${dayjs(r.date_to).format('DD/MM')}`;
-    const reviewer = r.reviewer_real_name || r.reviewer_name || '';
-    return `<tr>
-      <td>${name}</td>
-      <td>${ti.emoji} ${ti.label}</td>
-      <td>${period}</td>
-      <td style="max-width:200px;color:var(--text-muted);font-size:0.8rem">${r.notes || '—'}</td>
-      <td>${statusBadge(r.status)}</td>
-      <td style="font-size:0.8rem;color:var(--text-muted)">${reviewer || '—'}</td>
-      <td style="font-size:0.75rem;color:var(--text-muted)">${r.reject_reason || '—'}</td>
-      <td style="font-size:0.75rem;color:var(--text-muted)">${dayjs(r.created_at).format('DD/MM/YYYY HH:mm')}</td>
-    </tr>`;
-  }).join('');
-
-  return layout('Ausencias', 'ausencias', `
-    ${pending > 0 ? `<div style="margin-bottom:1.5rem;padding:0.75rem 1rem;background:rgba(253,203,110,0.1);border:1px solid var(--yellow);border-radius:8px;font-size:0.9rem;">
-      ⏳ Hay <strong>${pending}</strong> solicitud${pending !== 1 ? 'es' : ''} pendiente${pending !== 1 ? 's' : ''} de revisión.
-      Las aprobaciones se hacen desde el DM de Slack o con <code>/admin ausencias</code>.
-    </div>` : ''}
-
-    <form class="filters" method="GET" action="/dashboard/ausencias">
+const renderRegistros = ({ dias, users, from, to, selected }) => {
+  const opts = users.map(u => `<option value="${u.slack_id}" ${selected === u.slack_id ? 'selected' : ''}>${u.nombre}</option>`).join('');
+  return layout('Registros', 'registros', `
+    <form class="filters" method="GET" action="/dashboard/registros">
       <div><label>Desde</label><input type="date" name="from" value="${from}"></div>
       <div><label>Hasta</label><input type="date" name="to" value="${to}"></div>
-      <div><label>Estado</label>
-        <select name="status">
-          <option value="" ${!status ? 'selected' : ''}>Todos</option>
-          <option value="pending"  ${status === 'pending'  ? 'selected' : ''}>⏳ Pendientes</option>
-          <option value="approved" ${status === 'approved' ? 'selected' : ''}>✅ Aprobadas</option>
-          <option value="rejected" ${status === 'rejected' ? 'selected' : ''}>❌ Rechazadas</option>
-        </select>
-      </div>
+      <div><label>Persona</label><select name="user"><option value="">Todas</option>${opts}</select></div>
       <button type="submit">Filtrar</button>
     </form>
+    <div class="card">${dias.length ? `<table><thead><tr>
+      <th>Fecha</th><th>Persona</th><th>Entrada</th><th>Almuerzo</th><th>Salida</th><th>Horas</th><th>Flags</th><th>Estado</th>
+    </tr></thead><tbody>${dias.map(d => filaDia(d, true)).join('')}</tbody></table>` : '<p class="empty">No hay registros</p>'}</div>`);
+};
 
-    <div class="card">
-      <h3>Solicitudes de ausencia</h3>
-      ${records.length > 0 ? `<table><thead><tr>
-        <th>Persona</th><th>Tipo</th><th>Período</th><th>Nota</th><th>Estado</th><th>Revisado por</th><th>Motivo rechazo</th><th>Solicitado</th>
-      </tr></thead><tbody>${rows}</tbody></table>`
-      : `<p class="empty">No hay solicitudes para el período seleccionado.</p>`}
+const renderActividad = ({ presencia, pings, huboPings, from, to }) => {
+  const presRows = presencia.map(p => {
+    const c = p.pct >= 70 ? 'green' : p.pct >= 50 ? 'yellow' : 'red';
+    return `<tr><td>${p.nombre}</td><td>${p.checks}</td><td>${p.activos}</td>
+      <td>${p.pct}% <div class="progress"><div class="progress-bar ${c}" style="width:${p.pct}%"></div></div></td></tr>`;
+  }).join('');
+  const pingRows = pings.map(p => `<tr><td>${p.nombre}</td><td>${p.enviados}</td><td>${p.ok}</td><td>${p.perdidos}</td><td>${p.prom_seg != null ? p.prom_seg + 's' : '—'}</td></tr>`).join('');
+  return layout('Actividad', 'actividad', `
+    <form class="filters" method="GET" action="/dashboard/actividad">
+      <div><label>Desde</label><input type="date" name="from" value="${from}"></div>
+      <div><label>Hasta</label><input type="date" name="to" value="${to}"></div>
+      <button type="submit">Filtrar</button>
+    </form>
+    <div class="card" style="margin-bottom:1.5rem"><h3>👁️ Presencia Slack (% activo en horario laboral)</h3>
+      ${presencia.length ? `<table><thead><tr><th>Persona</th><th>Checks</th><th>Activo</th><th>% presencia</th></tr></thead><tbody>${presRows}</tbody></table>` : '<p class="empty">Sin datos</p>'}
     </div>
-  `);
+    ${huboPings ? `<div class="card"><h3>🏓 Pings dirigidos</h3>
+      ${pings.length ? `<table><thead><tr><th>Persona</th><th>Enviados</th><th>OK</th><th>Perdidos</th><th>Respuesta prom.</th></tr></thead><tbody>${pingRows}</tbody></table>` : '<p class="empty">Sin pings en el rango</p>'}
+    </div>` : ''}`);
+};
+
+const renderUsuarios = ({ users }) => {
+  const rows = users.map(u => {
+    const b = [];
+    if (u.es_admin) b.push('<span class="badge admin">Admin</span>');
+    if (u.trackeado) b.push('<span class="badge tracked">Trackeado</span>');
+    return `<tr><td>${u.nombre}</td><td style="font-size:0.75rem;color:var(--text-muted)">${u.slack_id}</td>
+      <td>${u.hora_entrada}–${u.hora_salida}</td><td>${u.carga_horaria}hs</td><td>${b.join(' ') || '—'}</td></tr>`;
+  }).join('');
+  return layout('Usuarios', 'usuarios', `
+    <div class="grid">
+      <div class="card"><h3>Total</h3><div class="value">${users.length}</div></div>
+      <div class="card"><h3>Trackeados</h3><div class="value green">${users.filter(u => u.trackeado).length}</div></div>
+      <div class="card"><h3>Admins</h3><div class="value" style="color:var(--accent-light)">${users.filter(u => u.es_admin).length}</div></div>
+    </div>
+    <div class="card"><h3>Roster</h3>
+      <p style="font-size:0.8rem;color:var(--text-muted);margin-bottom:1rem">Gestión por DM al bot: <code>admin agregar @usuario</code> · <code>admin horario @usuario HH:MM HH:MM Nhs</code></p>
+      ${users.length ? `<table><thead><tr><th>Nombre</th><th>Slack ID</th><th>Horario</th><th>Carga</th><th>Badges</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="empty">Sin usuarios</p>'}
+    </div>`);
 };
 
 module.exports = { setupDashboard };

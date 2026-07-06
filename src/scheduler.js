@@ -1,267 +1,195 @@
 const cron = require('node-cron');
-const t = require('./time');
 const fs = require('fs');
+const t = require('./time');
 const db = require('./database');
-const texts = require('./texts');
-const { buildWeeklyReport, buildMissingAlert, buildDailySummary, buildOvertimeAlert, buildLunchReminder,
-  buildEntryReminderBlocks, buildLunchReminderBlocks, buildExitReminderBlocks } = require('./blocks');
-const { runPingCycle, runPresenceCheck } = require('./activity');
-const { generateMonthlyExcel } = require('./excel');
+const txt = require('./texts');
+const { resumenDiario, reportePersonas } = require('./reports');
+const { runPresenceCheck, runPingCycle } = require('./activity');
+const { generarExcel } = require('./excel');
 
-const MAX_HOURS = parseFloat(process.env.MAX_HOURS_PER_DAY || '9');
-const TZ = t.TZ;
+// Ventanas de tolerancia: si la app estuvo caída (deploy de Railway) el aviso
+// sale apenas vuelve, pero no horas más tarde. La dedupe la hace la tabla avisos.
+const VENTANA_RECORDATORIO = 30;  // min para el recordatorio de entrada
+const VENTANA_ALERTA = 30;        // min para la alerta admin de faltantes
+const VENTANA_CIERRE = 180;       // min para mandar el DM de cierre
+const TIMEOUT_CIERRE = 20;        // min sin respuesta al DM de cierre → auto-cierre
 
+/**
+ * Motor de recordatorios y cierre: TODOS los horarios son relativos al
+ * horario personal de cada persona (no hay horarios globales de equipo).
+ */
 const setupScheduler = (app) => {
-  const REPORT_CHANNEL = process.env.REPORT_CHANNEL || '#asistencia';
   const SOLO_MODE = process.env.SOLO_MODE === 'true';
   const SOLO_USER_ID = process.env.SOLO_USER_ID || '';
-  const target = () => SOLO_MODE ? SOLO_USER_ID : REPORT_CHANNEL;
+  const soloUser = SOLO_MODE ? SOLO_USER_ID : null;
+  const REPORT_CHANNEL = process.env.REPORT_CHANNEL || '#asistencia';
+  const target = () => (SOLO_MODE ? SOLO_USER_ID : REPORT_CHANNEL);
 
-  // ─── Recordatorios de entrada ──────────────────────────────────
-  // - 09:35 inicial
-  // - Cada 30 min entre 10:00 y 12:30 si todavía no marcó
-  // - Después de 12:30 se corta (si no vino, no vino — el alert al admin
-  //   de las 10:30 ya cubre ese caso)
-  // NOTA: no hay reminder al arranque del server — eso generaba spam en
-  // cada redeploy de Railway.
-  const sendEntryReminders = async (timeLabel) => {
-    const today = t.today();
-    if (db.isHoliday(today)) return;
-    const missing = db.getMissingToday(today);
-    let count = 0;
-    for (const user of missing) {
-      if (db.isUserExemptToday(user.slack_id, today)) continue;
-      const msg = buildEntryReminderBlocks(timeLabel);
-      await app.client.chat.postMessage({ channel: user.slack_id, ...msg });
-      count++;
-    }
-    if (count > 0) console.log(`[scheduler] ${timeLabel} entry reminder → ${count} personas`);
+  const dm = (channel, text, blocks) => app.client.chat.postMessage({ channel, text, ...(blocks ? { blocks } : {}) });
+
+  const trackedActivos = (fecha) => db.getTracked()
+    .filter(u => !soloUser || u.slack_id === soloUser)
+    .filter(u => !db.isExento(u.slack_id, fecha));
+
+  // ─── Auto-cierre: salida AL horario personal, con flag ────────────
+  const autoCerrar = async (user, fecha, hora, msg) => {
+    db.imputarAlmuerzo(user, fecha); // si falta el almuerzo, se imputa 13:00–14:00
+    db.registrar(user, fecha, 'salida', hora, 'auto', { auto_closed: true, nota: 'auto_closed_sin_respuesta' });
+    db.setCierre(user.slack_id, fecha, { estado: 'cerrado' });
+    await dm(user.slack_id, msg);
+    console.log(`[cierre] Auto-cierre de ${user.nombre} → ${hora}`);
   };
 
-  // 09:35 inicial
-  cron.schedule('35 9 * * 1-5', async () => {
-    try { await sendEntryReminders('09:35'); }
-    catch (err) { console.error('[scheduler] Error 9:35 reminder:', err); }
-  }, { timezone: TZ });
+  // ─── Tick por minuto ───────────────────────────────────────────────
+  const tick = async () => {
+    const fecha = t.today();
+    if (!t.isWeekday(fecha) || db.isFeriado(fecha)) return;
+    const nowM = t.nowMin();
+    const faltantesBatch = [];
 
-  // 10:00, 10:30, 11:00, 11:30, 12:00, 12:30 — seguimiento (6 tiros max)
-  cron.schedule('0,30 10,11,12 * * 1-5', async () => {
-    try { await sendEntryReminders(t.now().format('HH:mm')); }
-    catch (err) { console.error('[scheduler] Error recurring reminder:', err); }
-  }, { timezone: TZ });
+    for (const user of trackedActivos(fecha)) {
+      const uid = user.slack_id;
+      const entradaM = t.toMin(user.hora_entrada);
+      const salidaM = t.toMin(user.hora_salida);
+      const dia = db.getDia(uid, fecha);
 
-  // ─── 10:30 — Alert to admin: who's still missing ────────────────
-  cron.schedule('30 10 * * 1-5', async () => {
-    try {
-      const today = t.today();
-      if (db.isHoliday(today)) return;
-      const missing = db.getMissingToday(today);
-      const blocks = buildMissingAlert(missing);
-      if (blocks) {
-        await app.client.chat.postMessage({ channel: target(), text: '⚠️ Alerta de asistencia', blocks });
-        console.log(`[scheduler] 10:30 missing alert — ${missing.length}`);
-      }
-    } catch (err) { console.error('[scheduler] Error 10:30:', err); }
-  }, { timezone: TZ });
-
-  // ─── 13:00 — Lunch reminder to individuals ──────────────────────
-  cron.schedule('0 13 * * 1-5', async () => {
-    try {
-      const today = t.today();
-      if (db.isHoliday(today)) return;
-      const noLunch = db.getNoLunchYet(today);
-      for (const r of noLunch) {
-        if (db.isUserExemptToday(r.slack_id, today)) continue;
-        if (db.isFieldDay(r.slack_id, today)) continue;
-        const msg = buildLunchReminderBlocks();
-        await app.client.chat.postMessage({ channel: r.slack_id, ...msg });
-      }
-      if (noLunch.length > 0) console.log(`[scheduler] 13:00 lunch reminder → ${noLunch.length}`);
-    } catch (err) { console.error('[scheduler] Error 13:00:', err); }
-  }, { timezone: TZ });
-
-  // ─── 16:00 — Auto-cierre del almuerzo si el usuario se olvidó ────
-  // Si ya son las 16:00 y el usuario no cerró el almuerzo, lo rellenamos
-  // con 1 hora (13:00-14:00) y le avisamos. Es solo un fallback; la idea
-  // es que el usuario lo haga.
-  cron.schedule('0 16 * * 1-5', async () => {
-    try {
-      const today = t.today();
-      if (db.isHoliday(today)) return;
-      const pending = db.getLunchNotClosed(today);
-      let count = 0;
-      for (const r of pending) {
-        if (db.isUserExemptToday(r.slack_id, today)) continue;
-        if (db.isFieldDay(r.slack_id, today)) continue;
-        db.fillMissingLunch(r.slack_id, today, r);
-        await app.client.chat.postMessage({
-          channel: r.slack_id,
-          text: texts.reminders.lunchAutoClosed,
-        });
-        count++;
-      }
-      if (count > 0) console.log(`[scheduler] 16:00 lunch auto-close → ${count} personas`);
-    } catch (err) { console.error('[scheduler] Error 16:00:', err); }
-  }, { timezone: TZ });
-
-  // ─── 18:30 — Exit handling ──────────────────────────────────────
-  // - Campo/reunión: cierre automático inmediato a las 18:30
-  // - Oficina CON pings respondidos hoy: cierre automático usando el
-  //   último ping como hora de salida (mensaje claro de que es fallback)
-  // - Oficina SIN pings respondidos: recordatorio con botón (todavía
-  //   tiene hasta 20:30 para cerrar manual)
-  cron.schedule('30 18 * * 1-5', async () => {
-    try {
-      const today = t.today();
-      if (db.isHoliday(today)) return;
-
-      const incomplete = db.getIncompleteToday(today);
-      for (const r of incomplete) {
-        const isField = r.work_mode === 'field' || db.isFieldDay(r.slack_id, today);
-        const hasMeeting = db.getActiveMeeting(r.slack_id, today);
-
-        if (isField || hasMeeting) {
-          // Auto-close field/meeting users at 18:30
-          if (hasMeeting) db.endMeeting(hasMeeting.id, '18:30');
-          db.fillMissingLunch(r.slack_id, today, r);
-          db.updateField(r.slack_id, today, 'exit_time', '18:30');
-          await app.client.chat.postMessage({
-            channel: r.slack_id,
-            text: texts.reminders.exitAutoClosedField,
-          });
-          console.log(`[scheduler] Auto-closed field/meeting: ${r.real_name || r.name}`);
-          continue;
+      try {
+        // 1. Entrada +5 min: recordatorio si no fichó
+        if (!dia.entrada && nowM >= entradaM + 5 && nowM <= entradaM + 5 + VENTANA_RECORDATORIO && !db.avisoEnviado(uid, fecha, 'rec_entrada')) {
+          db.marcarAviso(uid, fecha, 'rec_entrada');
+          await dm(uid, txt.recordatorios.entrada(user.hora_entrada));
         }
 
-        // Office worker — try to close with last responded ping time
-        const lastPing = db.getLastRespondedPingTime(r.slack_id, today);
-        if (lastPing) {
-          const exitHM = lastPing.substring(0, 5); // HH:MM from HH:MM:SS
-          const missed = db.getMissedPingCount(r.slack_id, today);
-          db.fillMissingLunch(r.slack_id, today, r);
-          db.updateField(r.slack_id, today, 'exit_time', exitHM);
-          await app.client.chat.postMessage({
-            channel: r.slack_id,
-            text: texts.reminders.exitAutoClosedByPing(exitHM, missed),
-          });
-          console.log(`[scheduler] 18:30 auto-close by last ping: ${r.real_name || r.name} → ${exitHM}`);
-        } else {
-          // No ping answered — send reminder with button (still has until 20:30)
-          const msg = buildExitReminderBlocks();
-          await app.client.chat.postMessage({ channel: r.slack_id, ...msg });
+        // 2. Entrada +60 min: alerta al canal admin
+        if (!dia.entrada && nowM >= entradaM + 60 && nowM <= entradaM + 60 + VENTANA_ALERTA && !db.avisoEnviado(uid, fecha, 'alerta_admin')) {
+          db.marcarAviso(uid, fecha, 'alerta_admin');
+          faltantesBatch.push(user);
         }
+
+        // 3. Horario de salida: DM de cierre con botones
+        if (dia.entrada && !dia.salida && nowM >= salidaM && nowM <= salidaM + VENTANA_CIERRE && !db.getCierre(uid, fecha)) {
+          db.setCierre(uid, fecha, { estado: 'esperando', dm_hora: t.currentTime() });
+          await dm(uid, txt.cierre.dm(user.hora_salida), [
+            { type: 'section', text: { type: 'mrkdwn', text: txt.cierre.dm(user.hora_salida) } },
+            { type: 'actions', elements: [
+              { type: 'button', text: { type: 'plain_text', text: txt.cierre.btnSalida }, style: 'primary', action_id: 'cierre_salida' },
+              { type: 'button', text: { type: 'plain_text', text: txt.cierre.btnExtra }, action_id: 'cierre_extra' },
+            ] },
+          ]);
+        }
+
+        // 4. Estados del cierre
+        const cierre = db.getCierre(uid, fecha);
+        if (!cierre || cierre.estado === 'cerrado') continue;
+
+        // La persona marcó salida por otra vía → cerrar el flujo
+        if (dia.salida) { db.setCierre(uid, fecha, { estado: 'cerrado' }); continue; }
+
+        // Sin respuesta al DM de cierre en 20 min → salida AL horario personal
+        if (cierre.estado === 'esperando' && nowM >= t.toMin(cierre.dm_hora) + TIMEOUT_CIERRE) {
+          await autoCerrar(user, fecha, user.hora_salida, txt.cierre.autoCerrado(user.hora_salida));
+        }
+
+        // Fin del bloque extra → "¿Seguís trabajando?" (sin nueva aprobación)
+        if (cierre.estado === 'extra_activa' && nowM >= t.toMin(cierre.extra_hasta)) {
+          db.setCierre(uid, fecha, { estado: 'pregunta', pregunta_hora: t.currentTime() });
+          await dm(uid, txt.cierre.pregunta, [
+            { type: 'section', text: { type: 'mrkdwn', text: txt.cierre.pregunta } },
+            { type: 'actions', elements: [
+              { type: 'button', text: { type: 'plain_text', text: txt.cierre.btnSeguir }, style: 'primary', action_id: 'extra_seguir' },
+              { type: 'button', text: { type: 'plain_text', text: txt.cierre.btnSalida }, action_id: 'cierre_salida' },
+            ] },
+          ]);
+        }
+
+        // Sin respuesta a la pregunta en 20 min → cierre al fin del último bloque
+        if (cierre.estado === 'pregunta' && nowM >= t.toMin(cierre.pregunta_hora) + TIMEOUT_CIERRE) {
+          await autoCerrar(user, fecha, cierre.extra_hasta, txt.cierre.cierreLimite(cierre.extra_hasta));
+        }
+      } catch (err) {
+        console.error(`[scheduler] Error con ${user.nombre}: ${err.message}`);
       }
-    } catch (err) { console.error('[scheduler] Error 18:30:', err); }
-  }, { timezone: TZ });
+    }
 
-  // ─── 20:30 — Auto-close anyone still open ────────────────────
-  // Último fallback: si a las 20:30 no cerraron ni hay ping que usar,
-  // se cierra en 18:30 (horario estándar).
-  cron.schedule('30 20 * * 1-5', async () => {
-    try {
-      const today = t.today();
-      if (db.isHoliday(today)) return;
+    if (faltantesBatch.length) {
+      const lista = faltantesBatch.map(u => `• *${u.nombre}* (entrada ${u.hora_entrada})`).join('\n');
+      await dm(target(), txt.recordatorios.faltantesAdmin(lista));
+      console.log(`[scheduler] Alerta faltantes → ${faltantesBatch.length}`);
+    }
+  };
 
-      const closed = db.autoCloseDay(today, '18:30');
+  cron.schedule('* * * * 1-5', () => tick().catch(e => console.error('[scheduler] tick:', e)), { timezone: t.TZ });
 
-      for (const c of closed) {
-        const exitLabel = c.exit_time === '18:30' ? '18:30 (horario estándar)' : `${c.exit_time} (última actividad registrada)`;
-        await app.client.chat.postMessage({
-          channel: c.slack_id,
-          text: texts.reminders.exitAutoClosedUser(exitLabel),
-        });
-      }
+  // ─── Presencia cada 15 min ─────────────────────────────────────────
+  cron.schedule('*/15 * * * 1-5', () => runPresenceCheck(app, soloUser).catch(e => console.error('[presencia]', e)), { timezone: t.TZ });
 
-      if (closed.length > 0) {
-        const names = closed.map(c => `• ${c.real_name || c.name} → ${c.exit_time}`).join('\n');
-        await app.client.chat.postMessage({
-          channel: target(),
-          text: `🔒 *Cierre automático del día:*\n${names}`,
-        });
-        console.log(`[scheduler] 20:30 auto-close → ${closed.length} personas`);
-      }
-    } catch (err) { console.error('[scheduler] Error 20:30:', err); }
-  }, { timezone: TZ });
+  // ─── Pings dirigidos (tick por minuto, solo con modo activo) ──────
+  cron.schedule('* * * * 1-5', () => runPingCycle(app, soloUser).catch(e => console.error('[pings]', e)), { timezone: t.TZ });
 
-  // ─── 19:00 — Daily summary to channel ───────────────────────────
+  // ─── 19:00 — Resumen diario por excepción ──────────────────────────
   cron.schedule('0 19 * * 1-5', async () => {
     try {
-      const today = t.today();
-      const data = db.getDailySummary(today);
-      const blocks = buildDailySummary(data, today);
-      await app.client.chat.postMessage({ channel: target(), text: '📋 Resumen del día', blocks });
+      const fecha = t.today();
+      if (db.isFeriado(fecha)) return;
+      await dm(target(), resumenDiario(fecha));
+      console.log('[scheduler] Resumen diario enviado');
+    } catch (err) { console.error('[scheduler] Resumen 19:00:', err); }
+  }, { timezone: t.TZ });
 
-      // Overtime check
-      const overtime = db.getOvertimeToday(today, MAX_HOURS);
-      const overtimeBlocks = buildOvertimeAlert(overtime);
-      if (overtimeBlocks) {
-        await app.client.chat.postMessage({ channel: target(), text: '⚠️ Horas extra', blocks: overtimeBlocks });
-      }
-
-      console.log('[scheduler] 19:00 daily summary sent');
-    } catch (err) { console.error('[scheduler] Error 19:00:', err); }
-  }, { timezone: TZ });
-
-  // ─── Friday 18:00 — Weekly report ───────────────────────────────
+  // ─── Viernes 18:00 — Reporte semanal ───────────────────────────────
   cron.schedule('0 18 * * 5', async () => {
     try {
-      const s = t.weekStart(), e = t.today();
-      const blocks = buildWeeklyReport(db.getWeeklySummary(s, e), s, e);
-      await app.client.chat.postMessage({ channel: target(), text: '📊 Reporte semanal', blocks });
-      console.log('[scheduler] Weekly report sent');
-    } catch (err) { console.error('[scheduler] Error weekly:', err); }
-  }, { timezone: TZ });
+      await dm(target(), reportePersonas('📊 *Reporte semanal*', t.weekStart(), t.today()));
+      console.log('[scheduler] Reporte semanal enviado');
+    } catch (err) { console.error('[scheduler] Semanal:', err); }
+  }, { timezone: t.TZ });
 
-  // ─── 1st of month 09:00 — Monthly report + Excel ────────────────
+  // ─── 1ro de cada mes 09:00 — Reporte mensual + Excel ───────────────
   cron.schedule('0 9 1 * *', async () => {
     try {
-      const lastMonth = t.now().subtract(1, 'month');
-      const s = lastMonth.startOf('month').format('YYYY-MM-DD');
-      const e = lastMonth.endOf('month').format('YYYY-MM-DD');
-      const label = lastMonth.format('YYYY-MM');
+      const mesPasado = t.now().subtract(1, 'month');
+      const from = mesPasado.startOf('month').format('YYYY-MM-DD');
+      const to = mesPasado.endOf('month').format('YYYY-MM-DD');
+      await dm(target(), reportePersonas(`📊 *Reporte mensual — ${mesPasado.format('MMMM YYYY')}*`, from, to));
 
-      // Summary in Slack
-      const blocks = buildWeeklyReport(db.getWeeklySummary(s, e), s, e);
-      blocks[0].text.text = `📊 Reporte mensual: ${lastMonth.format('MMMM YYYY')}`;
-      await app.client.chat.postMessage({ channel: target(), text: '📊 Reporte mensual', blocks });
-
-      // Excel
-      const filepath = await generateMonthlyExcel(s, e, label);
+      const filepath = await generarExcel(from, to, mesPasado.format('YYYY-MM'));
+      const channelId = await resolveChannelId(app.client, target());
       await app.client.files.uploadV2({
-        channel_id: typeof target() === 'string' && target().startsWith('U') ? target() : undefined,
-        channels: typeof target() === 'string' && !target().startsWith('U') ? target() : undefined,
+        channel_id: channelId,
         file: fs.readFileSync(filepath),
-        filename: `asistencia_${label}.xlsx`,
-        title: `Asistencia ${lastMonth.format('MMMM YYYY')}`,
+        filename: filepath.split('/').pop(),
+        title: `Asistencia ${mesPasado.format('MMMM YYYY')}`,
       });
+      console.log('[scheduler] Reporte mensual + Excel enviados');
+    } catch (err) { console.error('[scheduler] Mensual:', err); }
+  }, { timezone: t.TZ });
 
-      console.log('[scheduler] Monthly report + Excel sent');
-    } catch (err) { console.error('[scheduler] Error monthly:', err); }
-  }, { timezone: TZ });
+  console.log('[scheduler] Cron configurado (TZ America/Argentina/Buenos_Aires):');
+  console.log('  → Tick por minuto: recordatorios, cierre y extras según horario PERSONAL');
+  console.log('  → Presencia Slack: cada 15 min en horario laboral de cada persona');
+  console.log('  → Pings dirigidos: solo con modo activado por admin');
+  console.log('  → Resumen diario (solo anomalías): L-V 19:00');
+  console.log('  → Reporte semanal: viernes 18:00');
+  console.log('  → Reporte mensual + Excel: 1ro de cada mes 09:00');
+};
 
-  // ─── Activity pings: every minute L-V ───────────────────────────
-  cron.schedule('* * * * 1-5', async () => {
-    try { await runPingCycle(app); } catch (err) { console.error('[scheduler] Ping error:', err); }
-  }, { timezone: TZ });
-
-  // ─── Presence check: every 30 min L-V ───────────────────────────
-  cron.schedule('0,30 * * * 1-5', async () => {
-    try { await runPresenceCheck(app); } catch (err) { console.error('[scheduler] Presence error:', err); }
-  }, { timezone: TZ });
-
-  console.log('[scheduler] Cron jobs configurados:');
-  console.log('  → Recordatorio entrada: L-V 09:35 + 10:00/10:30/11:00/11:30/12:00/12:30 si falta');
-  console.log('  → Alerta faltantes al admin: L-V 10:30');
-  console.log('  → Recordatorio almuerzo: L-V 13:00');
-  console.log('  → Auto-cierre almuerzo (1h fallback): L-V 16:00');
-  console.log('  → Pings actividad: 4/día (2 AM ~10:30/12:00 + 2 PM ~15:30/18:00 ±5min) L-V');
-  console.log('  → Cierre oficina (último ping / botón): L-V 18:30');
-  console.log('  → Auto-cierre campo/reunión: L-V 18:30');
-  console.log('  → Auto-cierre general final: L-V 20:30');
-  console.log('  → Resumen diario: L-V 19:00');
-  console.log('  → Reporte semanal: Viernes 18:00');
-  console.log('  → Reporte mensual + Excel: 1ro 09:00');
-  console.log('  → Presencia Slack: cada 30 min L-V');
+/** files.uploadV2 necesita un channel ID: resuelve #nombre, U... (DM) o ID directo */
+const resolveChannelId = async (client, target) => {
+  if (target.startsWith('U')) {
+    return (await client.conversations.open({ users: target })).channel.id;
+  }
+  if (target.startsWith('#')) {
+    const name = target.slice(1);
+    let cursor;
+    do {
+      const res = await client.conversations.list({ limit: 200, cursor, types: 'public_channel,private_channel' });
+      const found = res.channels.find(c => c.name === name);
+      if (found) return found.id;
+      cursor = res.response_metadata?.next_cursor;
+    } while (cursor);
+    throw new Error(`Canal ${target} no encontrado (¿el bot está invitado?)`);
+  }
+  return target; // ya es un ID (C...)
 };
 
 module.exports = { setupScheduler };
