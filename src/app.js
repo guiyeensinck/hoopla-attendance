@@ -10,6 +10,16 @@ const { setupWeb } = require('./web');
 const { setupDashboard } = require('./dashboard');
 const { setupScheduler } = require('./scheduler');
 
+// Nunca morir en loop por una promesa sin catch (p. ej. auth.test de Bolt
+// con un token revocado): logueamos claro y el server sigue vivo.
+process.on('unhandledRejection', (err) => {
+  console.error('[proceso] ⚠️ Promesa sin catch:', err?.data?.error || err?.message || err);
+  if (err?.data?.error === 'invalid_auth' || err?.data?.error === 'token_revoked') {
+    console.error('[proceso] 👉 SLACK_BOT_TOKEN inválido o revocado. Si reinstalaste la app en api.slack.com, copiá el token nuevo (xoxb-...) a las variables de Railway.');
+  }
+});
+process.on('uncaughtException', (err) => console.error('[proceso] ⚠️ Excepción sin catch:', err));
+
 // ─── Validación de entorno (logs claros para Railway) ──────────────
 const REQUIRED = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET'];
 const missing = REQUIRED.filter(k => !process.env[k]);
@@ -324,6 +334,16 @@ app.action('ping_respond', async ({ body, action, ack, client }) => {
   setupDashboard(receiver);
   setupScheduler(app);
   await app.start(PORT);
+
+  // Chequeo del token con mensaje claro (no tumba el proceso)
+  try {
+    const auth = await app.client.auth.test();
+    console.log(`[slack] ✅ Conectado como ${auth.user} en ${auth.team}`);
+  } catch (e) {
+    console.error(`[slack] ❌ El token de Slack no sirve (${e.data?.error || e.message}).`);
+    console.error('[slack] 👉 Si reinstalaste la app en api.slack.com, actualizá SLACK_BOT_TOKEN en Railway con el token nuevo.');
+  }
+
   console.log(`\n  ⚡ Hoopla Asistencia — puerto ${PORT}`);
   console.log(`  → Eventos Slack:  POST /slack/events`);
   console.log(`  → Dashboard:      /dashboard`);
