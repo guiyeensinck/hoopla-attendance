@@ -3,7 +3,8 @@ const fs = require('fs');
 const t = require('./time');
 const db = require('./database');
 const txt = require('./texts');
-const { resumenDiario, reportePersonas } = require('./reports');
+const { resumenDiario, reportePersonas, resumenEjecutivo } = require('./reports');
+const { detectarPatrones } = require('./patrones');
 const { runPresenceCheck, runPingCycle } = require('./activity');
 const { generarExcel } = require('./excel');
 
@@ -120,14 +121,30 @@ const setupScheduler = (app) => {
   // ─── Pings dirigidos (tick por minuto, solo con modo activo) ──────
   cron.schedule('* * * * 1-5', () => runPingCycle(app, soloUsers).catch(e => console.error('[pings]', e)), { timezone: t.TZ });
 
-  // ─── 19:00 — Resumen diario por excepción ──────────────────────────
+  // ─── 19:00 — Resumen diario por excepción + patrones ───────────────
   cron.schedule('0 19 * * 1-5', async () => {
     try {
       const fecha = t.today();
       if (db.isFeriado(fecha)) return;
       await dm(target(), resumenDiario(fecha));
+
+      // Patrones multi-día (cada patrón por persona se avisa 1 vez por semana)
+      const alertas = detectarPatrones(soloUsers);
+      if (alertas.length) {
+        await dm(target(), `🔍 *Patrones detectados* _(últimos 10 días hábiles)_\n\n${alertas.join('\n')}`);
+        console.log(`[patrones] ${alertas.length} alertas enviadas`);
+      }
       console.log('[scheduler] Resumen diario enviado');
     } catch (err) { console.error('[scheduler] Resumen 19:00:', err); }
+  }, { timezone: t.TZ });
+
+  // ─── Lunes 09:00 — Resumen ejecutivo ────────────────────────────────
+  cron.schedule('0 9 * * 1', async () => {
+    try {
+      const texto = resumenEjecutivo();
+      if (texto) await dm(target(), texto);
+      console.log('[scheduler] Resumen ejecutivo enviado');
+    } catch (err) { console.error('[scheduler] Ejecutivo lunes:', err); }
   }, { timezone: t.TZ });
 
   // ─── Viernes 18:00 — Reporte semanal ───────────────────────────────
@@ -162,7 +179,8 @@ const setupScheduler = (app) => {
   console.log('  → Tick por minuto: recordatorios y cierre según horario PERSONAL');
   console.log('  → Presencia Slack: cada 15 min en horario laboral de cada persona');
   console.log('  → Pings dirigidos: solo con modo activado por admin');
-  console.log('  → Resumen diario (solo anomalías): L-V 19:00');
+  console.log('  → Resumen diario (solo anomalías) + patrones: L-V 19:00');
+  console.log('  → Resumen ejecutivo: lunes 09:00');
   console.log('  → Reporte semanal: viernes 18:00');
   console.log('  → Reporte mensual + Excel: 1ro de cada mes 09:00');
 };

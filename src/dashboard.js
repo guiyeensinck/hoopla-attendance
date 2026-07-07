@@ -150,6 +150,7 @@ const renderUsuarios = ({ users }) => {
     if (u.es_admin) b.push('<span class="badge admin">Admin</span>');
     if (u.trackeado) b.push('<span class="badge tracked">Trackeado</span>');
     return `<tr><td>${u.nombre}</td><td style="font-size:0.75rem;color:var(--text-muted)">${u.slack_id}</td>
+      <td>${u.equipo || '—'}</td>
       <td>${u.hora_entrada}–${u.hora_salida}</td><td>${u.carga_horaria}hs</td><td>${b.join(' ') || '—'}</td></tr>`;
   }).join('');
   return layout('Usuarios', 'usuarios', `
@@ -160,7 +161,7 @@ const renderUsuarios = ({ users }) => {
     </div>
     <div class="card"><h3>Roster</h3>
       <p style="font-size:0.8rem;color:var(--text-muted);margin-bottom:1rem">Gestión por DM al bot: <code>admin agregar @usuario</code> · <code>admin horario @usuario HH:MM HH:MM Nhs</code></p>
-      ${users.length ? `<table><thead><tr><th>Nombre</th><th>Slack ID</th><th>Horario</th><th>Carga</th><th>Badges</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="empty">Sin usuarios</p>'}
+      ${users.length ? `<table><thead><tr><th>Nombre</th><th>Slack ID</th><th>Equipo</th><th>Horario</th><th>Carga</th><th>Badges</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="empty">Sin usuarios</p>'}
     </div>`);
 };
 

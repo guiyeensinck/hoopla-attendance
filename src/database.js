@@ -143,6 +143,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_pings_fecha ON pings(fecha);
 `);
 
+// Migración: columna equipo para agrupar reportes por área
+try { db.exec('ALTER TABLE users ADD COLUMN equipo TEXT'); } catch (_) { /* ya existe */ }
+
 const TIPOS_ORDEN = ['entrada', 'almuerzo_inicio', 'almuerzo_fin', 'salida'];
 const NOVEDADES_EXENTAS = ['feriado', 'vacaciones', 'medico', 'ausente', 'libre'];
 
@@ -161,6 +164,7 @@ const setAdmin = (id, v) => db.prepare('UPDATE users SET es_admin = ? WHERE slac
 const setHorario = (id, entrada, salida, carga) =>
   db.prepare('UPDATE users SET hora_entrada = ?, hora_salida = ?, carga_horaria = ? WHERE slack_id = ?')
     .run(entrada, salida, carga, id);
+const setEquipo = (id, equipo) => db.prepare('UPDATE users SET equipo = ? WHERE slack_id = ?').run(equipo, id);
 
 const superAdmins = () => (process.env.ADMIN_USER_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
 const isSuperAdmin = (id) => superAdmins().includes(id);
@@ -373,6 +377,13 @@ const presenciaSummary = (from, to) => db.prepare(`
   FROM presencia p JOIN users u ON u.slack_id = p.user_id
   WHERE p.fecha BETWEEN ? AND ? GROUP BY p.user_id ORDER BY u.nombre`).all(from, to);
 
+/** % de presencia activa por día de una persona (para detección de patrones) */
+const presenciaPorDia = (userId, from, to) => db.prepare(`
+  SELECT fecha, COUNT(*) as checks,
+    SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as activos,
+    ROUND(100.0 * SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) / COUNT(*), 1) as pct
+  FROM presencia WHERE user_id = ? AND fecha BETWEEN ? AND ? GROUP BY fecha ORDER BY fecha`).all(userId, from, to);
+
 // ═══════════════════════════════════════════════════════════════════
 // PINGS DIRIGIDOS
 // ═══════════════════════════════════════════════════════════════════
@@ -458,12 +469,12 @@ const resumenPersonas = (from, to) => {
 
 module.exports = {
   db, TIPOS_ORDEN, NOVEDADES_EXENTAS,
-  upsertUser, getUser, getAllUsers, getTracked, setTracked, setAdmin, setHorario, isAdmin, isSuperAdmin,
+  upsertUser, getUser, getAllUsers, getTracked, setTracked, setAdmin, setHorario, setEquipo, isAdmin, isSuperAdmin,
   getDia, nextTipo, horasDia, registrar, imputarAlmuerzo, corregirSalida, getDias,
   addNovedad, getNovedadesFecha, getNovedadesRange, isFeriado, hasNovedad, isExento, diasEsperados,
   createToken, peekToken, consumeToken,
   getCierre, setCierre,
-  logPresencia, presenciaSummary, ultimaActividad,
+  logPresencia, presenciaSummary, presenciaPorDia, ultimaActividad,
   addPingModo, getPingModoActivo, getPingModosEnRango, createPing, respondPing, expirarPings, pingsHoyCount, pingSummary,
   logIntentoMobile, getIntentosMobile, avisoEnviado, marcarAviso,
   faltantes, resumenPersonas,

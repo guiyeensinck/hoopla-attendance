@@ -3,7 +3,7 @@ const t = require('./time');
 const db = require('./database');
 const txt = require('./texts');
 const { agregarAlTracking } = require('./onboarding');
-const { resumenDiario, reportePersonas } = require('./reports');
+const { resumenDiario, reportePersonas, fichaPersona, resumenEjecutivo } = require('./reports');
 const { generarExcel } = require('./excel');
 
 // Siempre @mención de Slack, nunca nombre tipeado
@@ -18,6 +18,8 @@ const USO = `⚙️ *Gestión de asistencia* — escribime \`admin ...\` acá en
 \`admin agregarme\` · \`admin agregartodos\` · \`admin agregar @user\` · \`admin sacar @user\`
 \`admin admin @user\` — nombrar admin (solo super admin)
 \`admin horario @user HH:MM HH:MM Nhs\` — ej: \`admin horario @ana 09:00 18:00 8hs\`
+\`admin persona @user\` — ficha completa (horas, tardes, presencia, saldo)
+\`admin equipo @user Nombre\` — asignar equipo (\`-\` para sacarlo) · \`admin equipos\` — ver equipos
 
 *Novedades*
 \`admin feriado FECHA Motivo\` — aplica a todos
@@ -30,7 +32,7 @@ const USO = `⚙️ *Gestión de asistencia* — escribime \`admin ...\` acá en
 \`admin novedades [FECHA]\` · \`admin actividad\` · \`admin presencia\`
 
 *Reportes*
-\`admin reporte hoy\` · \`admin reporte semana\` · \`admin reporte mes\` · \`admin export\` (Excel por DM)
+\`admin reporte hoy\` · \`admin reporte semana\` · \`admin reporte mes\` · \`admin reporte ejecutivo\` · \`admin export\` (Excel por DM)
 
 _Fechas en formato YYYY-MM-DD._`;
 
@@ -124,6 +126,35 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
           await ensureUser(client, uid);
           db.setHorario(uid, entrada, salida, carga);
           await say(`✅ Horario de *${db.getUser(uid)?.nombre || uid}*: ${entrada}–${salida}, ${carga}hs/día.`);
+          break;
+        }
+
+        case 'persona': case 'ficha': {
+          const uid = extractMention(parts[1] || '');
+          if (!uid) { await say(txt.errores.faltaMencion); return; }
+          const target = db.getUser(uid);
+          if (!target) { await say('⚠️ Esa persona todavía no está en el sistema.'); return; }
+          await say(fichaPersona(target));
+          break;
+        }
+        case 'equipo': {
+          const uid = extractMention(parts[1] || '');
+          if (!uid) { await say(txt.errores.faltaMencion); return; }
+          const equipo = parts.slice(2).join(' ').trim();
+          if (!equipo) { await say('⚠️ Uso: `admin equipo @user NombreEquipo` (o `-` para sacarlo del equipo)'); return; }
+          await ensureUser(client, uid);
+          db.setEquipo(uid, equipo === '-' ? null : equipo);
+          await say(equipo === '-'
+            ? `✅ *${db.getUser(uid)?.nombre || uid}* quedó sin equipo.`
+            : `✅ *${db.getUser(uid)?.nombre || uid}* → equipo *${equipo}*.`);
+          break;
+        }
+        case 'equipos': {
+          const users = db.getTracked();
+          const grupos = {};
+          for (const u of users) (grupos[u.equipo || 'Sin equipo'] ||= []).push(u.nombre);
+          const lineas = Object.keys(grupos).sort().map(eq => `*${eq}* (${grupos[eq].length}): ${grupos[eq].join(', ')}`);
+          await say(`👥 *Equipos:*\n${lineas.join('\n')}`);
           break;
         }
 
@@ -221,7 +252,8 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
           if (rango === 'hoy') { await say(resumenDiario(t.today())); return; }
           if (rango === 'semana') { await say(reportePersonas('📊 *Reporte semanal*', t.weekStart(), t.today())); return; }
           if (rango === 'mes') { await say(reportePersonas('📊 *Reporte mensual*', t.monthStart(), t.today())); return; }
-          await say('⚠️ Uso: `reporte hoy` · `reporte semana` · `reporte mes`');
+          if (rango === 'ejecutivo') { await say(resumenEjecutivo() || '_Sin datos de la semana pasada._'); return; }
+          await say('⚠️ Uso: `reporte hoy` · `reporte semana` · `reporte mes` · `reporte ejecutivo`');
           break;
         }
         case 'export': {

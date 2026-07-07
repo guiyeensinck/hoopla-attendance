@@ -52,8 +52,16 @@ Al horario de salida de cada persona, si no marcó salida, el bot manda DM con e
 | Entrada personal +5 min | DM si no fichó (respeta feriados/vacaciones/ausencias/novedades) |
 | Entrada personal +60 min | Alerta al canal admin con faltantes |
 | 19:00 | Resumen diario **por excepción**: solo anomalías (tardes, ausencias sin novedad, auto-cierres, intentos mobile). Si no hay: "Sin novedades, N presentes" |
-| Viernes 18:00 | Reporte semanal: por persona, horas vs esperadas, tardes, auto-cierres |
+| 19:00 | **Patrones detectados** (solo si hay nuevos): ver sección siguiente |
+| Lunes 09:00 | **Resumen ejecutivo**: semana pasada en números + desvíos + novedades de esta semana |
+| Viernes 18:00 | Reporte semanal: por persona (agrupado por equipo), horas vs esperadas, tardes, auto-cierres |
 | 1ro de cada mes 09:00 | Reporte mensual + Excel al canal (3 hojas: detalle diario, resumen por persona, novedades) |
+
+### Management por excepción (para dirección)
+- **Detección de patrones** (con el resumen de las 19:00, cada patrón se avisa 1 vez por semana por persona, analizando los últimos 10 días hábiles): ⏰ 3+ llegadas tarde de ≥10 min · 🔒 3+ auto-cierres (no marca salida) · 📉 saldo mensual ≤ −4hs · 👻 fichó pero presencia en Slack <30% en 3+ días (con datos suficientes). Umbrales ajustables en `src/patrones.js`.
+- **Ficha de persona** (`admin persona @user`): últimos 10 días hábiles — horas vs esperadas, entrada promedio, tardes, auto-cierres, % presencia, saldo del mes y novedades. Contexto instantáneo para una 1:1.
+- **Banco de horas**: saldo mensual acumulado por persona (trabajadas − esperadas del 1° a hoy). Cada persona ve el suyo en `horarios`; el admin lo ve en la ficha y en los patrones.
+- **Equipos** (`admin equipo @user Nombre`): los reportes semanal/mensual y el resumen ejecutivo agrupan y totalizan por equipo; el dashboard muestra el equipo en el roster.
 
 ### Qué se le puede escribir al bot (todo por DM)
 
@@ -66,13 +74,15 @@ Al horario de salida de cada persona, si no marcó salida, el bot manda DM con e
 - `admin agregarme` · `admin agregartodos` · `admin agregar @user` · `admin sacar @user`
 - `admin admin @user` — solo super admins de `ADMIN_USER_IDS`
 - `admin horario @user HH:MM HH:MM Nhs`
+- `admin persona @user` — ficha completa de una persona
+- `admin equipo @user Nombre` (o `-` para sacarlo) · `admin equipos`
 - `admin feriado FECHA Motivo` (aplica a todos)
 - `admin vacaciones @user DESDE HASTA` (un registro por día hábil)
 - `admin medico @user FECHA Motivo` · `admin ausente @user FECHA Motivo` · `admin libre @user FECHA` · `admin salida @user FECHA Motivo`
 - `admin remoto @user FECHA`
 - `admin ping @user [días]`
 - `admin novedades [FECHA]` · `admin actividad` · `admin presencia`
-- `admin reporte hoy` · `admin reporte semana` · `admin reporte mes` · `admin export` (Excel por DM)
+- `admin reporte hoy` · `admin reporte semana` · `admin reporte mes` · `admin reporte ejecutivo` · `admin export` (Excel por DM)
 
 `admin` solo (sin argumentos) muestra la lista completa.
 

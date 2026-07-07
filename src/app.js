@@ -3,7 +3,7 @@ const { App, ExpressReceiver } = require('@slack/bolt');
 const t = require('./time');
 const db = require('./database');
 const txt = require('./texts');
-const { semanaUsuario } = require('./balance');
+const { semanaUsuario, saldoMes } = require('./balance');
 const { handleAdmin } = require('./admin');
 const { route } = require('./dmrouter');
 const { setupWeb } = require('./web');
@@ -116,6 +116,9 @@ const resumenBlocks = (user) => {
     balanceMsg = `${Math.abs(s.diff) > 2 ? '🔴' : '🟡'} ${txt.web.balanceDebeGeneral(Math.abs(s.diff))}`;
   }
 
+  const mes = saldoMes(user);
+  const mesIcono = mes.diff >= 0 ? '🟢' : mes.diff >= -2 ? '🟡' : '🔴';
+
   return [
     { type: 'header', text: { type: 'plain_text', text: `📊 Tu estado — ${t.fmtDate(t.today())}` } },
     { type: 'context', elements: [{ type: 'mrkdwn', text: `Tu horario: ${user.hora_entrada}–${user.hora_salida} · ${user.carga_horaria}hs/día` }] },
@@ -123,6 +126,7 @@ const resumenBlocks = (user) => {
     { type: 'divider' },
     { type: 'section', text: { type: 'mrkdwn', text: `*📅 Tu semana* (desde el lunes)\n${filas.join('\n')}` } },
     { type: 'section', text: { type: 'mrkdwn', text: `Total: *${s.trabajadas}hs / ${s.esperadas}hs*\n${balanceMsg}` } },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: `${mesIcono} Saldo del mes: *${mes.diff >= 0 ? '+' : ''}${mes.diff}hs* (${mes.trabajadas}/${mes.esperadas}hs)` }] },
   ];
 };
 

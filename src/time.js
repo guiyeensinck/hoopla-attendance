@@ -55,8 +55,19 @@ const isWeekday = (dateStr) => {
 const fmtDate = (d) => dayjs(d).format('DD/MM/YYYY');
 const fmtRange = (s, e) => `${dayjs(s).format('DD/MM')} – ${dayjs(e).format('DD/MM/YYYY')}`;
 
+/** Fecha de hace N días hábiles (sin contar fines de semana) */
+const haceDiasHabiles = (n) => {
+  let d = now();
+  let c = 0;
+  while (c < n) {
+    d = d.subtract(1, 'day');
+    if (isWeekday(d.format('YYYY-MM-DD'))) c++;
+  }
+  return d.format('YYYY-MM-DD');
+};
+
 module.exports = {
   dayjs, TZ, now, today, currentTime, nowMin,
   toMin, toHHMM, weekStart, monthStart,
-  isValidDate, isValidTime, isWeekday, fmtDate, fmtRange,
+  isValidDate, isValidTime, isWeekday, fmtDate, fmtRange, haceDiasHabiles,
 };

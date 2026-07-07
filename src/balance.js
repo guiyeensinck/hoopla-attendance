@@ -1,6 +1,36 @@
 const t = require('./time');
 const db = require('./database');
 
+/** Horas parciales de hoy si la jornada está en curso (entrada sin salida) */
+const parcialHoy = (user) => {
+  const hoyDia = db.getDia(user.slack_id, t.today());
+  if (!hoyDia.entrada || hoyDia.salida) return 0;
+  let mins = t.nowMin() - t.toMin(hoyDia.entrada.hora);
+  if (hoyDia.almuerzo_inicio && hoyDia.almuerzo_fin) {
+    mins -= t.toMin(hoyDia.almuerzo_fin.hora) - t.toMin(hoyDia.almuerzo_inicio.hora);
+  } else if (hoyDia.almuerzo_inicio) {
+    mins = t.toMin(hoyDia.almuerzo_inicio.hora) - t.toMin(hoyDia.entrada.hora);
+  }
+  return Math.max(0, mins / 60);
+};
+
+/**
+ * Banco de horas del mes: trabajadas (incluida la jornada en curso)
+ * contra esperadas según carga horaria, del 1° a hoy.
+ */
+const saldoMes = (user) => {
+  const desde = t.monthStart();
+  const hoy = t.today();
+  const dias = db.getDias(desde, hoy, user.slack_id);
+  const trabajadas = dias.reduce((s, d) => s + (d.horas || 0), 0) + parcialHoy(user);
+  const esperadas = db.diasEsperados(user.slack_id, desde, hoy) * user.carga_horaria;
+  return {
+    trabajadas: Math.round(trabajadas * 10) / 10,
+    esperadas: Math.round(esperadas * 10) / 10,
+    diff: Math.round((trabajadas - esperadas) * 10) / 10,
+  };
+};
+
 /**
  * Resumen semanal de UNA persona contra SU carga horaria.
  * El balance arranca cada lunes. Devuelve datos estructurados que
@@ -52,20 +82,11 @@ const semanaUsuario = (user) => {
 
   // Horas parciales de hoy si la jornada está en curso
   const hoyDia = db.getDia(user.slack_id, hoy);
-  let parcialHoy = 0;
-  if (hoyDia.entrada && !hoyDia.salida) {
-    let mins = t.nowMin() - t.toMin(hoyDia.entrada.hora);
-    if (hoyDia.almuerzo_inicio && hoyDia.almuerzo_fin) {
-      mins -= t.toMin(hoyDia.almuerzo_fin.hora) - t.toMin(hoyDia.almuerzo_inicio.hora);
-    } else if (hoyDia.almuerzo_inicio) {
-      mins = t.toMin(hoyDia.almuerzo_inicio.hora) - t.toMin(hoyDia.entrada.hora);
-    }
-    parcialHoy = Math.max(0, mins / 60);
-  }
+  const parcial = parcialHoy(user);
 
   trabajadas = Math.round(trabajadas * 100) / 100;
   const esperadas = Math.round(db.diasEsperados(user.slack_id, desde, hoy) * carga * 100) / 100;
-  const diff = Math.round((trabajadas + parcialHoy - esperadas) * 100) / 100;
+  const diff = Math.round((trabajadas + parcial - esperadas) * 100) / 100;
 
   // Si va atrás y la jornada sigue abierta, ¿hasta qué hora quedarse hoy?
   let horaCompensa = null;
@@ -74,7 +95,7 @@ const semanaUsuario = (user) => {
     if (minSugerido < 23 * 60) horaCompensa = t.toHHMM(minSugerido);
   }
 
-  return { desde, hoy, dias, trabajadas: Math.round((trabajadas + parcialHoy) * 10) / 10, esperadas, diff: Math.round(diff * 10) / 10, horaCompensa };
+  return { desde, hoy, dias, trabajadas: Math.round((trabajadas + parcial) * 10) / 10, esperadas, diff: Math.round(diff * 10) / 10, horaCompensa };
 };
 
-module.exports = { semanaUsuario };
+module.exports = { semanaUsuario, saldoMes, parcialHoy };
