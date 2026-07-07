@@ -166,6 +166,8 @@ db.exec(`
 
 // Migración: columna equipo para agrupar reportes por área
 try { db.exec('ALTER TABLE users ADD COLUMN equipo TEXT'); } catch (_) { /* ya existe */ }
+// Migración: cliente del proyecto (rollup de horas por cliente)
+try { db.exec('ALTER TABLE proyectos ADD COLUMN cliente TEXT'); } catch (_) { /* ya existe */ }
 
 const TIPOS_ORDEN = ['entrada', 'almuerzo_inicio', 'almuerzo_fin', 'salida'];
 const NOVEDADES_EXENTAS = ['feriado', 'vacaciones', 'medico', 'ausente', 'libre'];
@@ -448,14 +450,14 @@ const pingSummary = (from, to) => db.prepare(`
 // ═══════════════════════════════════════════════════════════════════
 // PROYECTOS E IMPUTACIONES (time tracking interno)
 // ═══════════════════════════════════════════════════════════════════
-const crearProyecto = (nombre) => {
+const crearProyecto = (nombre, cliente = null) => {
   const existente = db.prepare('SELECT * FROM proyectos WHERE nombre = ? COLLATE NOCASE').get(nombre);
   if (existente) {
-    if (existente.activo) return { estado: 'ya_existe', proyecto: existente };
-    db.prepare('UPDATE proyectos SET activo = 1 WHERE id = ?').run(existente.id);
-    return { estado: 'reactivado', proyecto: existente };
+    // Re-agregar actualiza el cliente (permite asignar cliente a un proyecto viejo)
+    db.prepare('UPDATE proyectos SET activo = 1, cliente = COALESCE(?, cliente) WHERE id = ?').run(cliente, existente.id);
+    return { estado: existente.activo ? 'ya_existe' : 'reactivado', proyecto: db.prepare('SELECT * FROM proyectos WHERE id = ?').get(existente.id) };
   }
-  const r = db.prepare('INSERT INTO proyectos (nombre) VALUES (?)').run(nombre);
+  const r = db.prepare('INSERT INTO proyectos (nombre, cliente) VALUES (?, ?)').run(nombre, cliente);
   return { estado: 'creado', proyecto: db.prepare('SELECT * FROM proyectos WHERE id = ?').get(r.lastInsertRowid) };
 };
 
@@ -483,9 +485,16 @@ const hayImputaciones = (userId, fecha) =>
 
 /** Totales por proyecto en un rango */
 const horasPorProyecto = (from, to) => db.prepare(`
-  SELECT p.nombre, ROUND(SUM(i.horas), 1) as horas, COUNT(DISTINCT i.user_id) as personas
+  SELECT p.nombre, p.cliente, ROUND(SUM(i.horas), 1) as horas, COUNT(DISTINCT i.user_id) as personas
   FROM imputaciones i JOIN proyectos p ON p.id = i.proyecto_id
   WHERE i.fecha BETWEEN ? AND ? GROUP BY p.id ORDER BY horas DESC`).all(from, to);
+
+/** Rollup por cliente en un rango (proyectos sin cliente → "Sin cliente") */
+const horasPorCliente = (from, to) => db.prepare(`
+  SELECT COALESCE(p.cliente, 'Sin cliente') as cliente, ROUND(SUM(i.horas), 1) as horas,
+    COUNT(DISTINCT p.id) as proyectos, COUNT(DISTINCT i.user_id) as personas
+  FROM imputaciones i JOIN proyectos p ON p.id = i.proyecto_id
+  WHERE i.fecha BETWEEN ? AND ? GROUP BY COALESCE(p.cliente, 'Sin cliente') ORDER BY horas DESC`).all(from, to);
 
 /** Detalle proyecto × persona en un rango */
 const horasProyectoPersona = (from, to) => db.prepare(`
@@ -503,7 +512,7 @@ const horasUsuarioPorProyecto = (userId, from, to) => db.prepare(`
 
 /** Detalle diario para el Excel */
 const getImputacionesRange = (from, to) => db.prepare(`
-  SELECT i.fecha, u.nombre as persona, p.nombre as proyecto, i.horas
+  SELECT i.fecha, u.nombre as persona, p.cliente, p.nombre as proyecto, i.horas
   FROM imputaciones i
   JOIN proyectos p ON p.id = i.proyecto_id
   JOIN users u ON u.slack_id = i.user_id
@@ -562,7 +571,7 @@ module.exports = {
   logPresencia, presenciaSummary, presenciaPorDia, ultimaActividad,
   addPingModo, getPingModoActivo, getPingModosEnRango, createPing, respondPing, expirarPings, pingsHoyCount, pingSummary,
   crearProyecto, archivarProyecto, getProyectos, setImputaciones, getImputacionesDia, hayImputaciones,
-  horasPorProyecto, horasProyectoPersona, horasUsuarioPorProyecto, getImputacionesRange,
+  horasPorProyecto, horasPorCliente, horasProyectoPersona, horasUsuarioPorProyecto, getImputacionesRange,
   logIntentoMobile, getIntentosMobile, avisoEnviado, marcarAviso,
   faltantes, resumenPersonas,
 };

@@ -102,7 +102,10 @@ const vistaProyectos = (user) => {
   const hoy = db.getImputacionesDia(user.slack_id, fecha);
   const semana = db.horasUsuarioPorProyecto(user.slack_id, t.weekStart(), t.today());
 
-  const lineas = [`🗂️ *Proyectos activos:* ${activos.map(p => p.nombre).join(', ')}`];
+  const grupos = {};
+  for (const p of activos) (grupos[p.cliente || 'Otros'] ||= []).push(p.nombre);
+  const catalogo = Object.keys(grupos).sort().map(cli => `*${cli}*: ${grupos[cli].join(', ')}`).join('\n');
+  const lineas = [`🗂️ *Proyectos activos:*\n${catalogo}`];
   lineas.push('', `Para imputar tu día respondeme: \`${activos[0].nombre} 4, ${activos[1]?.nombre || 'Interno'} 2\``);
   if (hoy.length) {
     lineas.push('', `*Tu ${t.fmtDate(fecha)}:* ${hoy.map(i => `${i.nombre} ${i.horas}hs`).join(' · ')}`);

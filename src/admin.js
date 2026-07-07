@@ -23,8 +23,9 @@ const USO = `⚙️ *Gestión de asistencia* — escribime \`admin ...\` acá en
 \`admin equipo @user Nombre\` — asignar equipo (\`-\` para sacarlo) · \`admin equipos\` — ver equipos
 
 *Proyectos (time tracking)*
-\`admin proyecto agregar Nombre\` · \`admin proyecto sacar Nombre\` · \`admin proyectos\`
-\`admin reporte proyectos [semana|mes]\` — horas por proyecto y persona
+\`admin proyecto agregar Cliente / Proyecto\` — sin \`/\` queda sin cliente (ej. Interno)
+\`admin proyecto sacar Nombre\` · \`admin proyectos\` (agrupado por cliente)
+\`admin reporte proyectos [semana|mes]\` — horas por cliente → proyecto → persona
 
 *Novedades*
 \`admin feriado FECHA Motivo\` — aplica a todos
@@ -166,32 +167,44 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
         // ─── Proyectos (time tracking interno) ────────────────────
         case 'proyecto': {
           const sub = (parts[1] || '').toLowerCase();
-          const nombre = parts.slice(2).join(' ').trim();
-          if (!['agregar', 'sacar'].includes(sub) || !nombre) {
-            await say('⚠️ Uso: `admin proyecto agregar Nombre` · `admin proyecto sacar Nombre`');
+          const resto = parts.slice(2).join(' ').trim();
+          if (!['agregar', 'sacar'].includes(sub) || !resto) {
+            await say('⚠️ Uso: `admin proyecto agregar Cliente / Proyecto` (sin `/` queda sin cliente, ej. Interno) · `admin proyecto sacar Nombre`');
             return;
           }
           if (sub === 'agregar') {
-            const r = db.crearProyecto(nombre);
-            const msj = { creado: `✅ Proyecto *${nombre}* creado.`, reactivado: `✅ Proyecto *${r.proyecto.nombre}* reactivado.`, ya_existe: `ℹ️ El proyecto *${r.proyecto.nombre}* ya existe.` };
+            // "Cliente / Proyecto" — la barra separa; sin barra, proyecto sin cliente
+            const [cliente, nombre] = resto.includes('/')
+              ? resto.split('/').map(s => s.trim())
+              : [null, resto];
+            if (!nombre) { await say('⚠️ Falta el nombre del proyecto después de la `/`.'); return; }
+            const r = db.crearProyecto(nombre, cliente);
+            const etiqueta = r.proyecto.cliente ? `*${r.proyecto.cliente} / ${r.proyecto.nombre}*` : `*${r.proyecto.nombre}*`;
+            const msj = { creado: `✅ Proyecto ${etiqueta} creado.`, reactivado: `✅ Proyecto ${etiqueta} reactivado.`, ya_existe: `ℹ️ El proyecto ${etiqueta} ya existía${cliente ? ' — cliente actualizado' : ''}.` };
             await say(msj[r.estado]);
           } else {
-            const proyecto = buscarProyecto(nombre);
-            if (!proyecto) { await say(`⚠️ No encontré el proyecto *${nombre}*.`); return; }
+            const proyecto = buscarProyecto(resto);
+            if (!proyecto) { await say(`⚠️ No encontré el proyecto *${resto}*.`); return; }
             db.archivarProyecto(proyecto.id);
             await say(`📦 Proyecto *${proyecto.nombre}* archivado (las horas ya imputadas se conservan en los reportes).`);
           }
           break;
         }
-        case 'proyectos': {
+        case 'proyectos': case 'clientes': {
           const activos = db.getProyectos(true);
-          if (!activos.length) { await say('🗂️ No hay proyectos. Creá el primero: `admin proyecto agregar Nombre`'); return; }
+          if (!activos.length) { await say('🗂️ No hay proyectos. Creá el primero: `admin proyecto agregar Cliente / Proyecto`'); return; }
           const horas = db.horasPorProyecto(t.monthStart(), t.today());
-          const lineas = activos.map(p => {
-            const h = horas.find(x => x.nombre === p.nombre);
-            return `• *${p.nombre}*${h ? ` — ${h.horas}hs este mes (${h.personas} persona${h.personas > 1 ? 's' : ''})` : ' — sin horas este mes'}`;
+          const grupos = {};
+          for (const p of activos) (grupos[p.cliente || 'Sin cliente'] ||= []).push(p);
+          const bloques = Object.keys(grupos).sort().map(cli => {
+            const lineas = grupos[cli].map(p => {
+              const h = horas.find(x => x.nombre === p.nombre);
+              return `  • ${p.nombre}${h ? ` — ${h.horas}hs este mes (${h.personas} persona${h.personas > 1 ? 's' : ''})` : ''}`;
+            });
+            const subtotal = Math.round(grupos[cli].reduce((s, p) => s + (horas.find(x => x.nombre === p.nombre)?.horas || 0), 0) * 10) / 10;
+            return `*${cli}*${subtotal ? ` — ${subtotal}hs este mes` : ''}\n${lineas.join('\n')}`;
           });
-          await say(`🗂️ *Proyectos activos:*\n${lineas.join('\n')}`);
+          await say(`🗂️ *Proyectos activos:*\n${bloques.join('\n')}`);
           break;
         }
 

@@ -96,6 +96,7 @@ const generarExcel = async (from, to, label) => {
     ws4.columns = [
       { header: 'Fecha', key: 'fecha', width: 12 },
       { header: 'Persona', key: 'persona', width: 22 },
+      { header: 'Cliente', key: 'cliente', width: 20 },
       { header: 'Proyecto', key: 'proyecto', width: 24 },
       { header: 'Horas', key: 'horas', width: 9 },
     ];

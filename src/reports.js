@@ -117,19 +117,29 @@ const fichaPersona = (user) => {
   return lineas.join('\n');
 };
 
-/** Horas por proyecto con desglose por persona */
+/** Horas por cliente → proyecto, con desglose por persona */
 const reporteProyectos = (titulo, from, to) => {
   const totales = db.horasPorProyecto(from, to);
   if (!totales.length) return `${titulo} _(${t.fmtRange(from, to)})_\n_Sin horas imputadas en el período._`;
   const detalle = db.horasProyectoPersona(from, to);
   const totalGeneral = Math.round(totales.reduce((s, p) => s + p.horas, 0) * 10) / 10;
 
-  const lineas = totales.map(p => {
+  const lineaProyecto = (p) => {
     const personas = detalle.filter(d => d.proyecto === p.nombre).map(d => `${d.persona} ${d.horas}`).join(' · ');
-    const pct = totalGeneral ? Math.round((p.horas / totalGeneral) * 100) : 0;
-    return `*${p.nombre}* — ${p.horas}hs (${pct}%)\n    ${personas}`;
-  });
-  return `${titulo} _(${t.fmtRange(from, to)})_\n\n${lineas.join('\n')}\n\nTotal imputado: *${totalGeneral}hs*`;
+    return `  • *${p.nombre}* — ${p.horas}hs\n     ${personas}`;
+  };
+
+  const grupos = {};
+  for (const p of totales) (grupos[p.cliente || 'Sin cliente'] ||= []).push(p);
+  const bloques = Object.entries(grupos)
+    .map(([cli, ps]) => ({ cli, ps, horas: Math.round(ps.reduce((s, p) => s + p.horas, 0) * 10) / 10 }))
+    .sort((a, b) => b.horas - a.horas)
+    .map(g => {
+      const pct = totalGeneral ? Math.round((g.horas / totalGeneral) * 100) : 0;
+      return `*${g.cli}* — ${g.horas}hs (${pct}%)\n${g.ps.map(lineaProyecto).join('\n')}`;
+    });
+
+  return `${titulo} _(${t.fmtRange(from, to)})_\n\n${bloques.join('\n\n')}\n\nTotal imputado: *${totalGeneral}hs*`;
 };
 
 /**
@@ -178,10 +188,10 @@ const resumenEjecutivo = () => {
     lineas.push(`• Por equipo: ${porEquipo.join(' · ')}`);
   }
 
-  // Proyectos: top 5 de la semana pasada
-  const proyectos = db.horasPorProyecto(lunesPasado, viernesPasado).slice(0, 5);
-  if (proyectos.length) {
-    lineas.push(`• Por proyecto: ${proyectos.map(p => `${p.nombre} ${p.horas}hs`).join(' · ')}`);
+  // Clientes: top 5 de la semana pasada (rollup de sus proyectos)
+  const clientes = db.horasPorCliente(lunesPasado, viernesPasado).slice(0, 5);
+  if (clientes.length) {
+    lineas.push(`• Por cliente: ${clientes.map(c => `${c.cliente} ${c.horas}hs`).join(' · ')}`);
   }
 
   // Esta semana: novedades ya cargadas
