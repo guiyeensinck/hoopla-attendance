@@ -156,7 +156,10 @@ app.message(async ({ message, say, client }) => {
     }
 
     const user = db.getUser(uid);
-    if (!user?.trackeado) { await say(txt.marcar.noTrackeado); return; }
+    if (!user?.trackeado) {
+      await say(db.isAdmin(uid) ? txt.marcar.noTrackeadoAdmin : txt.marcar.noTrackeado);
+      return;
+    }
 
     if (r.tipo === 'marcar') { await enviarLink(user, say); return; }
     if (r.tipo === 'horarios') { await say({ text: 'Tu estado', blocks: resumenBlocks(user) }); return; }

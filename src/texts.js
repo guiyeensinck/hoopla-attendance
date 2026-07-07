@@ -42,6 +42,7 @@ module.exports = {
     expireNote: '⏱️ El link es de un solo uso y expira en 5 minutos.',
     diaCompleto: '✅ Ya tenés la jornada completa registrada por hoy.',
     noTrackeado: '⚠️ Todavía no estás en el seguimiento de asistencia. Pedile a un admin que te agregue.',
+    noTrackeadoAdmin: '⚠️ Todavía no estás en el seguimiento de asistencia. Como sos admin, agregate vos: escribime `admin agregarme`.',
   },
 
   // ─── Página web ───────────────────────────────────────────────────
