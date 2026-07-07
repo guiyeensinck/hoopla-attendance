@@ -22,8 +22,11 @@ const esquemaViejo = (() => {
 })();
 if (esquemaViejo) {
   console.log('[db] ⚠️ Schema viejo detectado — recreando la base desde cero (sin datos que migrar)');
+  // Las tablas viejas tienen FKs entre sí: hay que apagarlas para poder dropear
+  db.pragma('foreign_keys = OFF');
   const tablas = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all();
   for (const t of tablas) db.exec(`DROP TABLE IF EXISTS "${t.name}"`);
+  db.pragma('foreign_keys = ON');
 }
 
 // ─── Schema ────────────────────────────────────────────────────────
