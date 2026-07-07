@@ -3,7 +3,8 @@ const t = require('./time');
 const db = require('./database');
 const txt = require('./texts');
 const { agregarAlTracking } = require('./onboarding');
-const { resumenDiario, reportePersonas, fichaPersona, resumenEjecutivo } = require('./reports');
+const { resumenDiario, reportePersonas, fichaPersona, resumenEjecutivo, reporteProyectos } = require('./reports');
+const { buscarProyecto } = require('./proyectos');
 const { generarExcel } = require('./excel');
 
 // Siempre @mención de Slack, nunca nombre tipeado
@@ -20,6 +21,10 @@ const USO = `⚙️ *Gestión de asistencia* — escribime \`admin ...\` acá en
 \`admin horario @user HH:MM HH:MM Nhs\` — ej: \`admin horario @ana 09:00 18:00 8hs\`
 \`admin persona @user\` — ficha completa (horas, tardes, presencia, saldo)
 \`admin equipo @user Nombre\` — asignar equipo (\`-\` para sacarlo) · \`admin equipos\` — ver equipos
+
+*Proyectos (time tracking)*
+\`admin proyecto agregar Nombre\` · \`admin proyecto sacar Nombre\` · \`admin proyectos\`
+\`admin reporte proyectos [semana|mes]\` — horas por proyecto y persona
 
 *Novedades*
 \`admin feriado FECHA Motivo\` — aplica a todos
@@ -158,6 +163,38 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
           break;
         }
 
+        // ─── Proyectos (time tracking interno) ────────────────────
+        case 'proyecto': {
+          const sub = (parts[1] || '').toLowerCase();
+          const nombre = parts.slice(2).join(' ').trim();
+          if (!['agregar', 'sacar'].includes(sub) || !nombre) {
+            await say('⚠️ Uso: `admin proyecto agregar Nombre` · `admin proyecto sacar Nombre`');
+            return;
+          }
+          if (sub === 'agregar') {
+            const r = db.crearProyecto(nombre);
+            const msj = { creado: `✅ Proyecto *${nombre}* creado.`, reactivado: `✅ Proyecto *${r.proyecto.nombre}* reactivado.`, ya_existe: `ℹ️ El proyecto *${r.proyecto.nombre}* ya existe.` };
+            await say(msj[r.estado]);
+          } else {
+            const proyecto = buscarProyecto(nombre);
+            if (!proyecto) { await say(`⚠️ No encontré el proyecto *${nombre}*.`); return; }
+            db.archivarProyecto(proyecto.id);
+            await say(`📦 Proyecto *${proyecto.nombre}* archivado (las horas ya imputadas se conservan en los reportes).`);
+          }
+          break;
+        }
+        case 'proyectos': {
+          const activos = db.getProyectos(true);
+          if (!activos.length) { await say('🗂️ No hay proyectos. Creá el primero: `admin proyecto agregar Nombre`'); return; }
+          const horas = db.horasPorProyecto(t.monthStart(), t.today());
+          const lineas = activos.map(p => {
+            const h = horas.find(x => x.nombre === p.nombre);
+            return `• *${p.nombre}*${h ? ` — ${h.horas}hs este mes (${h.personas} persona${h.personas > 1 ? 's' : ''})` : ' — sin horas este mes'}`;
+          });
+          await say(`🗂️ *Proyectos activos:*\n${lineas.join('\n')}`);
+          break;
+        }
+
         // ─── Novedades ────────────────────────────────────────────
         case 'feriado': {
           const fecha = parts[1];
@@ -253,7 +290,13 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
           if (rango === 'semana') { await say(reportePersonas('📊 *Reporte semanal*', t.weekStart(), t.today())); return; }
           if (rango === 'mes') { await say(reportePersonas('📊 *Reporte mensual*', t.monthStart(), t.today())); return; }
           if (rango === 'ejecutivo') { await say(resumenEjecutivo() || '_Sin datos de la semana pasada._'); return; }
-          await say('⚠️ Uso: `reporte hoy` · `reporte semana` · `reporte mes` · `reporte ejecutivo`');
+          if (rango === 'proyectos') {
+            const sub = (parts[2] || 'semana').toLowerCase();
+            const from = sub === 'mes' ? t.monthStart() : t.weekStart();
+            await say(reporteProyectos(`🗂️ *Horas por proyecto (${sub === 'mes' ? 'mes' : 'semana'})*`, from, t.today()));
+            return;
+          }
+          await say('⚠️ Uso: `reporte hoy` · `reporte semana` · `reporte mes` · `reporte ejecutivo` · `reporte proyectos [semana|mes]`');
           break;
         }
         case 'export': {

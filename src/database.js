@@ -136,6 +136,27 @@ db.exec(`
     PRIMARY KEY (user_id, fecha, tipo)
   );
 
+  -- Time tracking interno: catálogo de proyectos + horas imputadas por día
+  CREATE TABLE IF NOT EXISTS proyectos (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre     TEXT NOT NULL UNIQUE,
+    activo     INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS imputaciones (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     TEXT NOT NULL,
+    fecha       TEXT NOT NULL,
+    proyecto_id INTEGER NOT NULL,
+    horas       REAL NOT NULL,
+    created_at  TEXT DEFAULT (datetime('now')),
+    UNIQUE(user_id, fecha, proyecto_id),
+    FOREIGN KEY (proyecto_id) REFERENCES proyectos(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_imputaciones_fecha ON imputaciones(fecha);
+  CREATE INDEX IF NOT EXISTS idx_imputaciones_user ON imputaciones(user_id, fecha);
   CREATE INDEX IF NOT EXISTS idx_registros_fecha ON registros(fecha);
   CREATE INDEX IF NOT EXISTS idx_registros_user ON registros(user_id, fecha);
   CREATE INDEX IF NOT EXISTS idx_novedades_fecha ON novedades(fecha);
@@ -425,6 +446,70 @@ const pingSummary = (from, to) => db.prepare(`
   WHERE p.fecha BETWEEN ? AND ? GROUP BY p.user_id ORDER BY u.nombre`).all(from, to);
 
 // ═══════════════════════════════════════════════════════════════════
+// PROYECTOS E IMPUTACIONES (time tracking interno)
+// ═══════════════════════════════════════════════════════════════════
+const crearProyecto = (nombre) => {
+  const existente = db.prepare('SELECT * FROM proyectos WHERE nombre = ? COLLATE NOCASE').get(nombre);
+  if (existente) {
+    if (existente.activo) return { estado: 'ya_existe', proyecto: existente };
+    db.prepare('UPDATE proyectos SET activo = 1 WHERE id = ?').run(existente.id);
+    return { estado: 'reactivado', proyecto: existente };
+  }
+  const r = db.prepare('INSERT INTO proyectos (nombre) VALUES (?)').run(nombre);
+  return { estado: 'creado', proyecto: db.prepare('SELECT * FROM proyectos WHERE id = ?').get(r.lastInsertRowid) };
+};
+
+const archivarProyecto = (id) => db.prepare('UPDATE proyectos SET activo = 0 WHERE id = ?').run(id);
+const getProyectos = (soloActivos = true) =>
+  db.prepare(`SELECT * FROM proyectos ${soloActivos ? 'WHERE activo = 1' : ''} ORDER BY nombre`).all();
+
+/** Reemplaza las imputaciones del día de una persona (permite corregir) */
+const setImputaciones = db.transaction((userId, fecha, pares) => {
+  const habia = db.prepare('SELECT COUNT(*) c FROM imputaciones WHERE user_id = ? AND fecha = ?').get(userId, fecha).c > 0;
+  db.prepare('DELETE FROM imputaciones WHERE user_id = ? AND fecha = ?').run(userId, fecha);
+  for (const p of pares) {
+    db.prepare('INSERT INTO imputaciones (user_id, fecha, proyecto_id, horas) VALUES (?, ?, ?, ?)')
+      .run(userId, fecha, p.proyecto_id, p.horas);
+  }
+  return habia;
+});
+
+const getImputacionesDia = (userId, fecha) => db.prepare(`
+  SELECT i.*, p.nombre FROM imputaciones i JOIN proyectos p ON p.id = i.proyecto_id
+  WHERE i.user_id = ? AND i.fecha = ? ORDER BY i.horas DESC`).all(userId, fecha);
+
+const hayImputaciones = (userId, fecha) =>
+  db.prepare('SELECT 1 FROM imputaciones WHERE user_id = ? AND fecha = ? LIMIT 1').get(userId, fecha) != null;
+
+/** Totales por proyecto en un rango */
+const horasPorProyecto = (from, to) => db.prepare(`
+  SELECT p.nombre, ROUND(SUM(i.horas), 1) as horas, COUNT(DISTINCT i.user_id) as personas
+  FROM imputaciones i JOIN proyectos p ON p.id = i.proyecto_id
+  WHERE i.fecha BETWEEN ? AND ? GROUP BY p.id ORDER BY horas DESC`).all(from, to);
+
+/** Detalle proyecto × persona en un rango */
+const horasProyectoPersona = (from, to) => db.prepare(`
+  SELECT p.nombre as proyecto, u.nombre as persona, ROUND(SUM(i.horas), 1) as horas
+  FROM imputaciones i
+  JOIN proyectos p ON p.id = i.proyecto_id
+  JOIN users u ON u.slack_id = i.user_id
+  WHERE i.fecha BETWEEN ? AND ? GROUP BY p.id, i.user_id ORDER BY p.nombre, horas DESC`).all(from, to);
+
+/** Imputaciones de una persona en un rango, agrupadas por proyecto */
+const horasUsuarioPorProyecto = (userId, from, to) => db.prepare(`
+  SELECT p.nombre, ROUND(SUM(i.horas), 1) as horas
+  FROM imputaciones i JOIN proyectos p ON p.id = i.proyecto_id
+  WHERE i.user_id = ? AND i.fecha BETWEEN ? AND ? GROUP BY p.id ORDER BY horas DESC`).all(userId, from, to);
+
+/** Detalle diario para el Excel */
+const getImputacionesRange = (from, to) => db.prepare(`
+  SELECT i.fecha, u.nombre as persona, p.nombre as proyecto, i.horas
+  FROM imputaciones i
+  JOIN proyectos p ON p.id = i.proyecto_id
+  JOIN users u ON u.slack_id = i.user_id
+  WHERE i.fecha BETWEEN ? AND ? ORDER BY i.fecha, u.nombre`).all(from, to);
+
+// ═══════════════════════════════════════════════════════════════════
 // INTENTOS MOBILE / AVISOS
 // ═══════════════════════════════════════════════════════════════════
 const logIntentoMobile = (userId, fecha, hora, ua) =>
@@ -476,6 +561,8 @@ module.exports = {
   getCierre, setCierre,
   logPresencia, presenciaSummary, presenciaPorDia, ultimaActividad,
   addPingModo, getPingModoActivo, getPingModosEnRango, createPing, respondPing, expirarPings, pingsHoyCount, pingSummary,
+  crearProyecto, archivarProyecto, getProyectos, setImputaciones, getImputacionesDia, hayImputaciones,
+  horasPorProyecto, horasProyectoPersona, horasUsuarioPorProyecto, getImputacionesRange,
   logIntentoMobile, getIntentosMobile, avisoEnviado, marcarAviso,
   faltantes, resumenPersonas,
 };

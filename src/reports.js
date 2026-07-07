@@ -105,11 +105,31 @@ const fichaPersona = (user) => {
     `*Saldo del mes*: ${saldo.diff >= 0 ? '🟢 +' : saldo.diff >= -2 ? '🟡 ' : '🔴 '}${saldo.diff}hs (${saldo.trabajadas}/${saldo.esperadas}hs)`,
   ];
 
+  const proyectos = db.horasUsuarioPorProyecto(user.slack_id, desde, hoy);
+  if (proyectos.length) {
+    lineas.push('', `*Por proyecto*: ${proyectos.map(p => `${p.nombre} ${p.horas}hs`).join(' · ')}`);
+  }
+
   if (novedades.length) {
     lineas.push('', '*Novedades en el período*');
     lineas.push(...novedades.map(n => `• ${n.fecha} — ${txt.NOVEDADES[n.tipo] || n.tipo}${n.motivo ? ` (${n.motivo})` : ''}`));
   }
   return lineas.join('\n');
+};
+
+/** Horas por proyecto con desglose por persona */
+const reporteProyectos = (titulo, from, to) => {
+  const totales = db.horasPorProyecto(from, to);
+  if (!totales.length) return `${titulo} _(${t.fmtRange(from, to)})_\n_Sin horas imputadas en el período._`;
+  const detalle = db.horasProyectoPersona(from, to);
+  const totalGeneral = Math.round(totales.reduce((s, p) => s + p.horas, 0) * 10) / 10;
+
+  const lineas = totales.map(p => {
+    const personas = detalle.filter(d => d.proyecto === p.nombre).map(d => `${d.persona} ${d.horas}`).join(' · ');
+    const pct = totalGeneral ? Math.round((p.horas / totalGeneral) * 100) : 0;
+    return `*${p.nombre}* — ${p.horas}hs (${pct}%)\n    ${personas}`;
+  });
+  return `${titulo} _(${t.fmtRange(from, to)})_\n\n${lineas.join('\n')}\n\nTotal imputado: *${totalGeneral}hs*`;
 };
 
 /**
@@ -158,6 +178,12 @@ const resumenEjecutivo = () => {
     lineas.push(`• Por equipo: ${porEquipo.join(' · ')}`);
   }
 
+  // Proyectos: top 5 de la semana pasada
+  const proyectos = db.horasPorProyecto(lunesPasado, viernesPasado).slice(0, 5);
+  if (proyectos.length) {
+    lineas.push(`• Por proyecto: ${proyectos.map(p => `${p.nombre} ${p.horas}hs`).join(' · ')}`);
+  }
+
   // Esta semana: novedades ya cargadas
   const finSemana = t.dayjs(t.weekStart()).add(4, 'day').format('YYYY-MM-DD');
   const novedades = db.getNovedadesRange(t.weekStart(), finSemana);
@@ -171,4 +197,4 @@ const resumenEjecutivo = () => {
   return lineas.join('\n');
 };
 
-module.exports = { resumenDiario, reportePersonas, fichaPersona, resumenEjecutivo };
+module.exports = { resumenDiario, reportePersonas, fichaPersona, resumenEjecutivo, reporteProyectos };

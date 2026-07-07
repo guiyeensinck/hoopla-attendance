@@ -89,6 +89,20 @@ const generarExcel = async (from, to, label) => {
     });
   }
 
+  // ─── Hoja 4: Proyectos (si hay horas imputadas) ──────────────────
+  const imputaciones = db.getImputacionesRange(from, to);
+  if (imputaciones.length) {
+    const ws4 = wb.addWorksheet('Proyectos');
+    ws4.columns = [
+      { header: 'Fecha', key: 'fecha', width: 12 },
+      { header: 'Persona', key: 'persona', width: 22 },
+      { header: 'Proyecto', key: 'proyecto', width: 24 },
+      { header: 'Horas', key: 'horas', width: 9 },
+    ];
+    header(ws4, 'FFA29BFE');
+    for (const i of imputaciones) ws4.addRow(i);
+  }
+
   const filepath = path.join(EXPORT_DIR, `asistencia_${label}.xlsx`);
   await wb.xlsx.writeFile(filepath);
   return filepath;

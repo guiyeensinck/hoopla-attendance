@@ -4,6 +4,7 @@ const db = require('./database');
 const txt = require('./texts');
 const { isMobileUA } = require('./verification');
 const { semanaUsuario } = require('./balance');
+const { promptImputacion } = require('./proyectos');
 const { miniLayout } = require('./styles');
 
 /**
@@ -75,6 +76,8 @@ const setupWeb = (receiver, slackClient = null) => {
         if (anticipado_min > 0) detalle = txt.web.anticipado(anticipado_min);
         confirmarPorDM(userId, txt.marcar.confirmacionDM(txt.TIPOS[next].emoji, txt.TIPOS[next].label, hora)
           + (tarde_min > 0 ? txt.marcar.confirmacionTarde(tarde_min) : ''));
+        // Al marcar salida, preguntar en qué se fue el día
+        if (next === 'salida' && slackClient) promptImputacion(slackClient, user, fecha);
       } else if (dia.salida?.auto_closed === 1 && !dia.salida.corregido) {
         // Corrección única del auto-cierre — el valor original queda loggeado
         const original = dia.salida.hora;

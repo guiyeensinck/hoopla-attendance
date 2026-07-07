@@ -68,6 +68,8 @@ Al horario de salida de cada persona, si no marcó salida, el bot manda DM con e
 **Para todos:**
 - `marcar` (también `entrada`, `salida`, `almuerzo`, `fichar`) — link para registrar la próxima marcación
 - `horarios` (también `estado`, `semana`, `balance`) — estado de hoy + balance semanal propio
+- `proyectos` — proyectos activos + lo imputado hoy y esta semana
+- `Nike 4, Interno 2` — imputa el día a proyectos (pares nombre + horas)
 - Cualquier otra cosa → menú con botones **Marcar** y **Mi semana**
 
 **Admin (`admin ...`, siempre con @mención, nunca nombre tipeado):**
@@ -76,6 +78,8 @@ Al horario de salida de cada persona, si no marcó salida, el bot manda DM con e
 - `admin horario @user HH:MM HH:MM Nhs`
 - `admin persona @user` — ficha completa de una persona
 - `admin equipo @user Nombre` (o `-` para sacarlo) · `admin equipos`
+- `admin proyecto agregar Nombre` · `admin proyecto sacar Nombre` · `admin proyectos`
+- `admin reporte proyectos [semana|mes]`
 - `admin feriado FECHA Motivo` (aplica a todos)
 - `admin vacaciones @user DESDE HASTA` (un registro por día hábil)
 - `admin medico @user FECHA Motivo` · `admin ausente @user FECHA Motivo` · `admin libre @user FECHA` · `admin salida @user FECHA Motivo`
@@ -87,6 +91,19 @@ Al horario de salida de cada persona, si no marcó salida, el bot manda DM con e
 `admin` solo (sin argumentos) muestra la lista completa.
 
 Al agregar a alguien al tracking, recibe un **DM de onboarding**: qué registra el sistema, qué ve el admin, cómo marcar, su horario, cómo se cierra el día y cómo avisar ausencias.
+
+### Time tracking por proyectos (interno)
+El admin mantiene el catálogo (`admin proyecto agregar Nombre`). Al registrar la **salida** (web, botón o auto-cierre), el bot pregunta *"¿En qué trabajaste hoy (7.5hs)?"* y la persona responde en el mismo DM con texto libre:
+
+```
+Nike 4, Quilmes 2.5, Interno 1
+```
+
+- La imputación se ancla a las horas reales del día (avisa si no coinciden). Mandar una nueva el mismo día **reemplaza** la anterior.
+- Si responde a la mañana siguiente, se imputa al último día hábil con salida sin imputar.
+- `proyectos` (por DM) muestra los activos y lo imputado hoy/esta semana.
+- Para el admin: `admin proyectos` (horas del mes por proyecto), `admin reporte proyectos [semana|mes]` (desglose por persona), línea "Por proyecto" en el resumen ejecutivo y hoja *Proyectos* en el Excel mensual.
+- `admin proyecto sacar Nombre` archiva (deja de ofrecerse; las horas históricas se conservan).
 
 ### Dashboard web (`/dashboard`)
 - **Hoy**: presentes, faltantes, jornada completa, horas del equipo.

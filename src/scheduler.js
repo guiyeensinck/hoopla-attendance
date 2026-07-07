@@ -5,6 +5,7 @@ const db = require('./database');
 const txt = require('./texts');
 const { resumenDiario, reportePersonas, resumenEjecutivo } = require('./reports');
 const { detectarPatrones } = require('./patrones');
+const { promptImputacion } = require('./proyectos');
 const { runPresenceCheck, runPingCycle } = require('./activity');
 const { generarExcel } = require('./excel');
 
@@ -50,6 +51,7 @@ const setupScheduler = (app) => {
     });
     db.setCierre(user.slack_id, fecha, { estado: 'cerrado' });
     await dm(user.slack_id, usaActividad ? txt.cierre.autoCerradoActividad(hora) : txt.cierre.autoCerrado(hora));
+    await promptImputacion(app.client, user, fecha);
     console.log(`[cierre] Auto-cierre de ${user.nombre} → ${hora}${usaActividad ? ' (última actividad)' : ' (horario)'}`);
   };
 

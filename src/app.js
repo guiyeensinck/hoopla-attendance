@@ -6,6 +6,7 @@ const txt = require('./texts');
 const { semanaUsuario, saldoMes } = require('./balance');
 const { handleAdmin } = require('./admin');
 const { route } = require('./dmrouter');
+const { procesarImputacion, vistaProyectos, promptImputacion } = require('./proyectos');
 const { setupWeb } = require('./web');
 const { setupDashboard } = require('./dashboard');
 const { setupScheduler } = require('./scheduler');
@@ -179,6 +180,12 @@ app.message(async ({ message, say, client }) => {
 
     if (r.tipo === 'marcar') { await enviarLink(user, say); return; }
     if (r.tipo === 'horarios') { await say({ text: 'Tu estado', blocks: resumenBlocks(user) }); return; }
+    if (r.tipo === 'proyectos') { await say(vistaProyectos(user)); return; }
+
+    // ¿Es una imputación de horas a proyectos? ("Nike 4, Interno 2")
+    const imputacion = procesarImputacion(user, message.text);
+    if (imputacion) { await say(imputacion); return; }
+
     await enviarMenu(user, say);
   } catch (err) {
     console.error('[dm] Error:', err);
@@ -228,6 +235,7 @@ app.action('cierre_salida', async ({ body, ack, client }) => {
   db.registrar(user, fecha, 'salida', hora, 'slack');
   db.setCierre(uid, fecha, { estado: 'cerrado' });
   await updateMsg(client, body, txt.cierre.salidaRegistrada(hora));
+  await promptImputacion(client, user, fecha);
   console.log(`[cierre] ${user.nombre} marcó salida ${hora} (botón)`);
 });
 

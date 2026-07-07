@@ -29,7 +29,7 @@ module.exports = {
     menuSaludo: (nombre) => `👋 ¡Hola, ${nombre}! ¿Qué necesitás?`,
     btnMarcar: (label) => `🕒 Marcar ${label}`,
     btnSemana: '📊 Mi semana',
-    menuHint: '_También podés escribirme directo: *marcar* (te mando el link) u *horarios* (tu semana)._',
+    menuHint: '_También podés escribirme directo: *marcar* (te mando el link), *horarios* (tu semana) o *proyectos* (imputar tu día)._',
     adminHint: '_Sos admin: escribí *admin* para ver los comandos de gestión._',
   },
 
