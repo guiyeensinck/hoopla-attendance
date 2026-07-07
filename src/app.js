@@ -41,15 +41,17 @@ app.error(async (error) => {
   if (error.original) console.error('[bolt] original:', error.original.message);
 });
 
-// ─── SOLO_MODE: responde a un solo usuario (para pruebas) ──────────
-// IMPORTANTE: hace ack() antes de descartar — si no, Slack muestra error.
+// ─── SOLO_MODE: beta cerrada (para pruebas) ────────────────────────
+// SOLO_USER_ID acepta varios IDs separados por coma — el bot solo les
+// responde a ellos. IMPORTANTE: hace ack() antes de descartar — si no,
+// Slack muestra error.
 const SOLO_MODE = process.env.SOLO_MODE === 'true';
-const SOLO_USER_ID = process.env.SOLO_USER_ID || '';
+const SOLO_USER_IDS = (process.env.SOLO_USER_ID || '').split(',').map(s => s.trim()).filter(Boolean);
 if (SOLO_MODE) {
-  console.log(`[solo] 🧪 SOLO_MODE activo — solo responde a ${SOLO_USER_ID}`);
+  console.log(`[solo] 🧪 SOLO_MODE activo — solo responde a: ${SOLO_USER_IDS.join(', ') || '(nadie)'}`);
   app.use(async ({ body, ack, next }) => {
     const uid = body?.user_id || body?.user?.id || body?.event?.user;
-    if (uid && uid !== SOLO_USER_ID) {
+    if (uid && !SOLO_USER_IDS.includes(uid)) {
       if (typeof ack === 'function') await ack();
       return;
     }
@@ -257,6 +259,6 @@ app.action('ping_respond', async ({ body, action, ack, client }) => {
   console.log(`  → Eventos Slack:  POST /slack/events`);
   console.log(`  → Dashboard:      /dashboard`);
   console.log(`  → Marcación:      /verify/:token`);
-  if (SOLO_MODE) console.log(`  → 🧪 SOLO_MODE: ${SOLO_USER_ID}`);
+  if (SOLO_MODE) console.log(`  → 🧪 SOLO_MODE: ${SOLO_USER_IDS.join(', ')}`);
   console.log('');
 })();

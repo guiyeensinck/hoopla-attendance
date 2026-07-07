@@ -71,8 +71,14 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
         }
         case 'agregartodos': {
           if (process.env.SOLO_MODE === 'true') {
-            const u = await agregarAlTracking(client, process.env.SOLO_USER_ID || adminId);
-            await say(`🧪 SOLO_MODE activo — agregué únicamente a *${u.nombre}*.`);
+            // En beta solo se agrega a los usuarios habilitados en SOLO_USER_ID
+            const ids = (process.env.SOLO_USER_ID || '').split(',').map(s => s.trim()).filter(Boolean);
+            const nombres = [];
+            for (const id of (ids.length ? ids : [adminId])) {
+              const u = await agregarAlTracking(client, id);
+              nombres.push(u.nombre);
+            }
+            await say(`🧪 SOLO_MODE activo — agregué solo a la beta: *${nombres.join('*, *')}*.`);
             break;
           }
           const res = await client.users.list({ limit: 200 });

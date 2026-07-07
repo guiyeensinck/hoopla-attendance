@@ -20,15 +20,16 @@ const TIMEOUT_CIERRE = 20;        // min sin respuesta al DM de cierre → auto-
  */
 const setupScheduler = (app) => {
   const SOLO_MODE = process.env.SOLO_MODE === 'true';
-  const SOLO_USER_ID = process.env.SOLO_USER_ID || '';
-  const soloUser = SOLO_MODE ? SOLO_USER_ID : null;
+  const SOLO_USER_IDS = (process.env.SOLO_USER_ID || '').split(',').map(s => s.trim()).filter(Boolean);
+  const soloUsers = SOLO_MODE ? SOLO_USER_IDS : null;
   const REPORT_CHANNEL = process.env.REPORT_CHANNEL || '#asistencia';
-  const target = () => (SOLO_MODE ? SOLO_USER_ID : REPORT_CHANNEL);
+  // En beta, lo que iría al canal admin va al DM del primer ID de la lista
+  const target = () => (SOLO_MODE ? SOLO_USER_IDS[0] : REPORT_CHANNEL);
 
   const dm = (channel, text, blocks) => app.client.chat.postMessage({ channel, text, ...(blocks ? { blocks } : {}) });
 
   const trackedActivos = (fecha) => db.getTracked()
-    .filter(u => !soloUser || u.slack_id === soloUser)
+    .filter(u => !soloUsers || soloUsers.includes(u.slack_id))
     .filter(u => !db.isExento(u.slack_id, fecha));
 
   // ─── Auto-cierre con flag ──────────────────────────────────────────
@@ -114,10 +115,10 @@ const setupScheduler = (app) => {
   cron.schedule('* * * * 1-5', () => tick().catch(e => console.error('[scheduler] tick:', e)), { timezone: t.TZ });
 
   // ─── Presencia cada 15 min ─────────────────────────────────────────
-  cron.schedule('*/15 * * * 1-5', () => runPresenceCheck(app, soloUser).catch(e => console.error('[presencia]', e)), { timezone: t.TZ });
+  cron.schedule('*/15 * * * 1-5', () => runPresenceCheck(app, soloUsers).catch(e => console.error('[presencia]', e)), { timezone: t.TZ });
 
   // ─── Pings dirigidos (tick por minuto, solo con modo activo) ──────
-  cron.schedule('* * * * 1-5', () => runPingCycle(app, soloUser).catch(e => console.error('[pings]', e)), { timezone: t.TZ });
+  cron.schedule('* * * * 1-5', () => runPingCycle(app, soloUsers).catch(e => console.error('[pings]', e)), { timezone: t.TZ });
 
   // ─── 19:00 — Resumen diario por excepción ──────────────────────────
   cron.schedule('0 19 * * 1-5', async () => {

@@ -99,7 +99,7 @@ Protegido opcionalmente con `DASHBOARD_TOKEN` (basic auth).
 | `ADMIN_USER_IDS` | ✅ | IDs de Slack de los super admins, separados por coma |
 | `DB_PATH` | ✅ en Railway | Carpeta de la DB SQLite. En Railway: `/data` (el volumen). Local: default `./data` |
 | `PORT` | — | Railway lo inyecta; local default 3000 |
-| `SOLO_MODE` / `SOLO_USER_ID` | — | `true` = solo responde a ese usuario y los mensajes de canal van a su DM (pruebas) |
+| `SOLO_MODE` / `SOLO_USER_ID` | — | `true` = beta cerrada: solo responde a esos IDs (varios separados por coma); los mensajes de canal van al DM del primero |
 | `DASHBOARD_TOKEN` | — | Si se setea, el dashboard pide esta clave |
 
 ---

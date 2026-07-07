@@ -8,14 +8,14 @@ const PINGS_POR_DIA = 3;
 // ═══════════════════════════════════════════════════════════════════
 // PRESENCIA — polling cada 15 min, solo dentro del horario personal
 // ═══════════════════════════════════════════════════════════════════
-const runPresenceCheck = async (app, soloUser = null) => {
+const runPresenceCheck = async (app, soloUsers = null) => {
   const fecha = t.today();
   if (!t.isWeekday(fecha) || db.isFeriado(fecha)) return;
   const nowM = t.nowMin();
   let checked = 0;
 
   for (const user of db.getTracked()) {
-    if (soloUser && user.slack_id !== soloUser) continue;
+    if (soloUsers && !soloUsers.includes(user.slack_id)) continue;
     if (db.isExento(user.slack_id, fecha)) continue;
     // Solo dentro del horario laboral de cada persona
     if (nowM < t.toMin(user.hora_entrada) || nowM >= t.toMin(user.hora_salida)) continue;
@@ -55,13 +55,13 @@ const agendaDelDia = (user, fecha) => {
   return slots;
 };
 
-const runPingCycle = async (app, soloUser = null) => {
+const runPingCycle = async (app, soloUsers = null) => {
   const fecha = t.today();
   if (!t.isWeekday(fecha) || db.isFeriado(fecha)) return;
   const nowM = t.nowMin();
 
   for (const user of db.getTracked()) {
-    if (soloUser && user.slack_id !== soloUser) continue;
+    if (soloUsers && !soloUsers.includes(user.slack_id)) continue;
     if (!db.getPingModoActivo(user.slack_id, fecha)) continue;
     if (db.isExento(user.slack_id, fecha)) continue;
 
