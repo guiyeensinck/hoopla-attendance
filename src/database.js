@@ -12,6 +12,20 @@ const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 console.log(`[db] SQLite en ${DB_PATH}`);
 
+// ─── Migración desde la app vieja ──────────────────────────────────
+// Si el volumen trae la DB del sistema anterior (users sin columna
+// "nombre"), se recrea todo de cero: quedó definido que no hay datos
+// para migrar.
+const esquemaViejo = (() => {
+  const cols = db.prepare('PRAGMA table_info(users)').all();
+  return cols.length > 0 && !cols.some(c => c.name === 'nombre');
+})();
+if (esquemaViejo) {
+  console.log('[db] ⚠️ Schema viejo detectado — recreando la base desde cero (sin datos que migrar)');
+  const tablas = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all();
+  for (const t of tablas) db.exec(`DROP TABLE IF EXISTS "${t.name}"`);
+}
+
 // ─── Schema ────────────────────────────────────────────────────────
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
