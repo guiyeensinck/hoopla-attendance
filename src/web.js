@@ -9,11 +9,18 @@ const { miniLayout } = require('./styles');
 /**
  * Páginas de marcación: GET /verify/:token muestra el formulario,
  * POST /verify/:token consume el token y registra con hora del servidor.
+ * Tras registrar, el bot confirma por DM (el historial queda en el chat).
  *
  * Mobile: bloqueado salvo novedad `remoto` para ese día. Los intentos
  * bloqueados se loguean para el reporte admin.
  */
-const setupWeb = (receiver) => {
+const setupWeb = (receiver, slackClient = null) => {
+  // Acuse por DM sin bloquear la respuesta HTTP
+  const confirmarPorDM = (userId, texto) => {
+    if (!slackClient) return;
+    slackClient.chat.postMessage({ channel: userId, text: texto })
+      .catch(e => console.error('[web] No pude confirmar por DM:', e.message));
+  };
   const router = express.Router();
   router.use(express.urlencoded({ extended: true }));
 
@@ -66,10 +73,14 @@ const setupWeb = (receiver) => {
         titulo = `${txt.web.registrado} — ${txt.TIPOS[next].label} ${hora}`;
         if (tarde_min > 0) detalle = txt.web.tarde(tarde_min);
         if (anticipado_min > 0) detalle = txt.web.anticipado(anticipado_min);
+        confirmarPorDM(userId, txt.marcar.confirmacionDM(txt.TIPOS[next].emoji, txt.TIPOS[next].label, hora)
+          + (tarde_min > 0 ? txt.marcar.confirmacionTarde(tarde_min) : ''));
       } else if (dia.salida?.auto_closed === 1 && !dia.salida.corregido) {
         // Corrección única del auto-cierre — el valor original queda loggeado
+        const original = dia.salida.hora;
         db.corregirSalida(user, fecha, hora);
         titulo = `${txt.web.corregido} — ${hora}`;
+        confirmarPorDM(userId, txt.marcar.confirmacionCorreccion(hora, original));
       } else {
         titulo = txt.web.diaCompleto;
       }

@@ -42,6 +42,9 @@ module.exports = {
     expireNote: '⏱️ El link es de un solo uso y expira en 5 minutos.',
     diaCompleto: '✅ Ya tenés la jornada completa registrada por hoy.',
     noTrackeado: '⚠️ Todavía no estás en el seguimiento de asistencia. Pedile a un admin que te agregue.',
+    confirmacionDM: (emoji, label, hora) => `${emoji} *${label}* registrada a las *${hora}* desde la web. 👌`,
+    confirmacionTarde: (min) => ` _(+${min} min tarde según tu horario)_`,
+    confirmacionCorreccion: (hora, original) => `✏️ Salida *corregida a las ${hora}* (el cierre automático decía ${original}).`,
     noTrackeadoAdmin: '⚠️ Todavía no estás en el seguimiento de asistencia. Como sos admin, agregate vos: escribime `admin agregarme`.',
   },
 
@@ -101,11 +104,12 @@ Escribime *horarios* cuando quieras ver tu estado del día y tu balance semanal.
 
   // ─── Cierre del día ───────────────────────────────────────────────
   cierre: {
-    dm: (hora) => `🌆 *Llegó tu horario de salida (${hora}).* ¿Cerramos el día?\n_Si no respondés en 20 minutos, registro tu salida a las ${hora} automáticamente (después podés corregirla una vez si seguías trabajando)._`,
+    dm: (hora) => `🌆 *Llegó tu horario de salida (${hora}).* ¿Cerramos el día?\n_Si no respondés en 20 minutos, registro tu salida automáticamente según tu última actividad detectada (como máximo ${hora}). Después podés corregirla una vez si seguías trabajando._`,
     btnSalida: '🔴 Marcar salida',
     salidaRegistrada: (hora) => `✅ Salida registrada a las *${hora}*. ¡Buen descanso!`,
     yaCerrado: '✅ Tu salida ya estaba registrada.',
     autoCerrado: (hora) => `🔒 No respondiste, así que registré tu salida automáticamente a las *${hora}* (tu horario). Si seguías trabajando, podés corregirla una sola vez: escribime *marcar*.`,
+    autoCerradoActividad: (hora) => `🔒 No respondiste, así que registré tu salida a las *${hora}* — tu última actividad detectada (presencia en Slack / marcaciones). Si seguías trabajando, podés corregirla una sola vez: escribime *marcar*.`,
   },
 
   // ─── Pings dirigidos ──────────────────────────────────────────────

@@ -351,6 +351,21 @@ const setCierre = (userId, fecha, fields) => {
 const logPresencia = (userId, fecha, hora, status) =>
   db.prepare('INSERT INTO presencia (user_id, fecha, hora, status) VALUES (?, ?, ?, ?)').run(userId, fecha, hora, status);
 
+/**
+ * Última señal de actividad real del día: el último check de presencia
+ * "active" o la última marcación hecha por la persona, lo más tarde.
+ * Devuelve null si no hubo chequeos de presencia ese día (sin datos no
+ * se opina — el auto-cierre cae al horario personal).
+ */
+const ultimaActividad = (userId, fecha) => {
+  const chequeos = db.prepare('SELECT COUNT(*) c FROM presencia WHERE user_id = ? AND fecha = ?').get(userId, fecha)?.c || 0;
+  if (!chequeos) return null;
+  const pres = db.prepare("SELECT MAX(hora) h FROM presencia WHERE user_id = ? AND fecha = ? AND status = 'active'").get(userId, fecha)?.h;
+  const reg = db.prepare("SELECT MAX(hora) h FROM registros WHERE user_id = ? AND fecha = ? AND origen != 'auto'").get(userId, fecha)?.h;
+  const candidatos = [pres, reg].filter(Boolean);
+  return candidatos.length ? candidatos.sort().pop() : null; // HH:MM ordena lexicográfico
+};
+
 const presenciaSummary = (from, to) => db.prepare(`
   SELECT p.user_id, u.nombre, COUNT(*) as checks,
     SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as activos,
@@ -448,7 +463,7 @@ module.exports = {
   addNovedad, getNovedadesFecha, getNovedadesRange, isFeriado, hasNovedad, isExento, diasEsperados,
   createToken, peekToken, consumeToken,
   getCierre, setCierre,
-  logPresencia, presenciaSummary,
+  logPresencia, presenciaSummary, ultimaActividad,
   addPingModo, getPingModoActivo, getPingModosEnRango, createPing, respondPing, expirarPings, pingsHoyCount, pingSummary,
   logIntentoMobile, getIntentosMobile, avisoEnviado, marcarAviso,
   faltantes, resumenPersonas,

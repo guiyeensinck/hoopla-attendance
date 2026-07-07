@@ -239,7 +239,7 @@ app.action('ping_respond', async ({ body, action, ack, client }) => {
 // ═══════════════════════════════════════════════════════════════════
 (async () => {
   const PORT = process.env.PORT || 3000;
-  setupWeb(receiver);
+  setupWeb(receiver, app.client);
   setupDashboard(receiver);
   setupScheduler(app);
   await app.start(PORT);

@@ -31,13 +31,24 @@ const setupScheduler = (app) => {
     .filter(u => !soloUser || u.slack_id === soloUser)
     .filter(u => !db.isExento(u.slack_id, fecha));
 
-  // ─── Auto-cierre: salida AL horario personal, con flag ────────────
-  const autoCerrar = async (user, fecha, hora, msg) => {
-    db.imputarAlmuerzo(user, fecha); // si falta el almuerzo, se imputa 13:00–14:00
-    db.registrar(user, fecha, 'salida', hora, 'auto', { auto_closed: true, nota: 'auto_closed_sin_respuesta' });
+  // ─── Auto-cierre con flag ──────────────────────────────────────────
+  // La salida se estampa en la ÚLTIMA ACTIVIDAD detectada (presencia
+  // "active" de Slack o última marcación), con tope en el horario
+  // personal. Sin datos de presencia ese día, cae al horario personal.
+  const autoCerrar = async (user, fecha) => {
+    const ultima = db.ultimaActividad(user.slack_id, fecha);
+    const usaActividad = ultima && ultima < user.hora_salida;
+    const hora = usaActividad ? ultima : user.hora_salida;
+
+    // El almuerzo solo se imputa si la salida quedó después de las 14:00
+    if (t.toMin(hora) >= 14 * 60) db.imputarAlmuerzo(user, fecha);
+    db.registrar(user, fecha, 'salida', hora, 'auto', {
+      auto_closed: true,
+      nota: usaActividad ? 'auto_closed_ultima_actividad' : 'auto_closed_sin_respuesta',
+    });
     db.setCierre(user.slack_id, fecha, { estado: 'cerrado' });
-    await dm(user.slack_id, msg);
-    console.log(`[cierre] Auto-cierre de ${user.nombre} → ${hora}`);
+    await dm(user.slack_id, usaActividad ? txt.cierre.autoCerradoActividad(hora) : txt.cierre.autoCerrado(hora));
+    console.log(`[cierre] Auto-cierre de ${user.nombre} → ${hora}${usaActividad ? ' (última actividad)' : ' (horario)'}`);
   };
 
   // ─── Tick por minuto ───────────────────────────────────────────────
@@ -84,9 +95,9 @@ const setupScheduler = (app) => {
         // La persona marcó salida por otra vía → cerrar el flujo
         if (dia.salida) { db.setCierre(uid, fecha, { estado: 'cerrado' }); continue; }
 
-        // Sin respuesta al DM de cierre en 20 min → salida AL horario personal
+        // Sin respuesta al DM de cierre en 20 min → auto-cierre
         if (cierre.estado === 'esperando' && nowM >= t.toMin(cierre.dm_hora) + TIMEOUT_CIERRE) {
-          await autoCerrar(user, fecha, user.hora_salida, txt.cierre.autoCerrado(user.hora_salida));
+          await autoCerrar(user, fecha);
         }
       } catch (err) {
         console.error(`[scheduler] Error con ${user.nombre}: ${err.message}`);

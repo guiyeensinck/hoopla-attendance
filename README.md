@@ -17,7 +17,7 @@ No hay slash commands. Cada persona abre el DM del bot (aparece en su sidebar de
 ### Marcaciones
 4 por día: **entrada → inicio almuerzo → fin almuerzo → salida**. Horas trabajadas = salida − entrada − almuerzo.
 
-- Escribirle **`marcar`** al bot (o tocar el botón del menú) responde con un **link de un solo uso que expira en 5 minutos**.
+- Escribirle **`marcar`** al bot (o tocar el botón del menú) responde con un **link de un solo uso que expira en 5 minutos**. Al registrar en la web, el bot confirma por DM — todo el historial del día queda en la conversación.
 - La página web valida el token y **bloquea user agents mobile** (iOS/Android/patrones comunes). Si es mobile: no registra, muestra "El registro solo puede hacerse desde una computadora" y **loguea el intento** para el reporte admin.
 - La hora la pone **siempre el servidor**, nunca el usuario.
 - Entrada después del horario personal → flag `tarde_min`. Salida antes → flag `anticipado_min`.
@@ -36,8 +36,11 @@ Cada persona ve **su propio estado** — nunca datos de otros:
 ### Cierre del día
 Al horario de salida de cada persona, si no marcó salida, el bot manda DM con el botón **Marcar salida**:
 - **Marcar salida** → registra con hora del servidor. La salida manual **no se puede cambiar**.
-- **Sin respuesta en 20 minutos** → salida automática registrada **al horario de salida de la persona** con flag `auto_closed_sin_respuesta` (visible en reportes y dashboard). Si falta el almuerzo, se imputa 13:00–14:00.
+- **Sin respuesta en 20 minutos** → salida automática con flag de auto-cierre, estampada en la **última actividad detectada** del día (último check de presencia "activo" en Slack o última marcación — error máx. ~15 min), con tope en su horario. Así, quien dejó de trabajar 18:00 con salida 18:30 queda registrado ~18:00 y el reporte muestra los minutos de anticipo. Sin datos de presencia ese día, se estampa el horario personal.
+- Si la salida quedó después de las 14:00 y falta el almuerzo, se imputa 13:00–14:00.
 - El auto-cierre se puede **corregir una sola vez** escribiéndole `marcar` al bot: la salida pasa a la hora actual y el valor original queda loggeado.
+
+> La presencia de Slack se apaga tras ~10 min de inactividad de la computadora, así que una reunión larga sin tocar la compu puede subestimar la hora real — para eso están el botón y la corrección única.
 
 ### Presencia y pings
 - **Presencia Slack** (active/away): polling cada 15 minutos para cada persona trackeada, solo dentro de su horario laboral. Alimenta el % de presencia en reportes.
