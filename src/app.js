@@ -196,7 +196,7 @@ app.action('menu_semana', async ({ body, ack, client }) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// CIERRE DEL DÍA Y HORAS EXTRA (botones)
+// CIERRE DEL DÍA (botón)
 // ═══════════════════════════════════════════════════════════════════
 
 const updateMsg = async (client, body, text) => {
@@ -205,7 +205,7 @@ const updateMsg = async (client, body, text) => {
   } catch (e) { console.error('[action] No pude actualizar el mensaje:', e.message); }
 };
 
-// "Marcar salida" — desde el DM de cierre, rechazo o pregunta de 30 min.
+// "Marcar salida" — desde el DM de cierre.
 // La salida manual queda registrada con hora del servidor y NO se puede cambiar.
 app.action('cierre_salida', async ({ body, ack, client }) => {
   await ack();
@@ -223,97 +223,6 @@ app.action('cierre_salida', async ({ body, ack, client }) => {
   db.setCierre(uid, fecha, { estado: 'cerrado' });
   await updateMsg(client, body, txt.cierre.salidaRegistrada(hora));
   console.log(`[cierre] ${user.nombre} marcó salida ${hora} (botón)`);
-});
-
-// "Necesito 30 min más" → pedido al canal admin
-app.action('cierre_extra', async ({ body, ack, client }) => {
-  await ack();
-  const uid = body.user.id;
-  const fecha = t.today();
-  const user = db.getUser(uid);
-  if (!user) return;
-
-  db.setCierre(uid, fecha, { estado: 'extra_pendiente' });
-  await updateMsg(client, body, txt.cierre.extraPedida);
-
-  const target = SOLO_MODE ? SOLO_USER_ID : (process.env.REPORT_CHANNEL || '#asistencia');
-  await client.chat.postMessage({
-    channel: target,
-    text: txt.cierre.adminPedido(user.nombre, user.hora_salida),
-    blocks: [
-      { type: 'section', text: { type: 'mrkdwn', text: txt.cierre.adminPedido(user.nombre, user.hora_salida) } },
-      { type: 'actions', elements: [
-        { type: 'button', text: { type: 'plain_text', text: txt.cierre.btnAprobar }, style: 'primary', action_id: 'extra_aprobar', value: uid },
-        { type: 'button', text: { type: 'plain_text', text: txt.cierre.btnRechazar }, style: 'danger', action_id: 'extra_rechazar', value: uid },
-      ] },
-    ],
-  });
-});
-
-// Aprobación admin — con la primera alcanza para todo el día
-app.action('extra_aprobar', async ({ body, action, ack, client }) => {
-  await ack();
-  const adminId = body.user.id;
-  if (!db.isAdmin(adminId)) {
-    await client.chat.postEphemeral({ channel: body.channel.id, user: adminId, text: txt.errores.sinPermiso });
-    return;
-  }
-  const uid = action.value;
-  const fecha = t.today();
-  const user = db.getUser(uid);
-  if (!user) return;
-
-  // Si aprobó tarde y la persona ya cerró su jornada, no arrancar el ciclo
-  if (db.getDia(uid, fecha).salida) {
-    await updateMsg(client, body, `ℹ️ *${user.nombre}* ya cerró su jornada — no hay extra que aprobar.`);
-    return;
-  }
-
-  db.setCierre(uid, fecha, { estado: 'extra_activa', extra_hasta: t.toHHMM(t.nowMin() + 30) });
-  db.addBloqueExtra(uid, fecha, adminId);
-  await updateMsg(client, body, txt.cierre.adminAprobado(user.nombre, `<@${adminId}>`));
-  await client.chat.postMessage({ channel: uid, text: txt.cierre.extraAprobada(`<@${adminId}>`) });
-  console.log(`[extras] ${user.nombre} — bloque 1 aprobado por ${adminId}`);
-});
-
-app.action('extra_rechazar', async ({ body, action, ack, client }) => {
-  await ack();
-  const adminId = body.user.id;
-  if (!db.isAdmin(adminId)) {
-    await client.chat.postEphemeral({ channel: body.channel.id, user: adminId, text: txt.errores.sinPermiso });
-    return;
-  }
-  const uid = action.value;
-  const fecha = t.today();
-  const user = db.getUser(uid);
-  if (!user) return;
-
-  // Reinicia la ventana de 20 min: si no marca salida, auto-cierre a su horario
-  db.setCierre(uid, fecha, { estado: 'esperando', dm_hora: t.currentTime() });
-  await updateMsg(client, body, txt.cierre.adminRechazado(user.nombre, `<@${adminId}>`));
-  await client.chat.postMessage({
-    channel: uid,
-    text: txt.cierre.extraRechazada,
-    blocks: [
-      { type: 'section', text: { type: 'mrkdwn', text: txt.cierre.extraRechazada } },
-      { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: txt.cierre.btnSalida }, style: 'primary', action_id: 'cierre_salida' }] },
-    ],
-  });
-});
-
-// "Sí, 30 más" — renueva el bloque sin nueva aprobación del admin
-app.action('extra_seguir', async ({ body, ack, client }) => {
-  await ack();
-  const uid = body.user.id;
-  const fecha = t.today();
-  const user = db.getUser(uid);
-  const cierre = db.getCierre(uid, fecha);
-  if (!user || !cierre || cierre.estado === 'cerrado') { await updateMsg(client, body, txt.cierre.yaCerrado); return; }
-
-  db.setCierre(uid, fecha, { estado: 'extra_activa', extra_hasta: t.toHHMM(t.nowMin() + 30) });
-  db.addBloqueExtra(uid, fecha, null); // conserva el aprobado_por original
-  await updateMsg(client, body, txt.cierre.extraRenovada);
-  console.log(`[extras] ${user.nombre} — bloque renovado`);
 });
 
 // ═══════════════════════════════════════════════════════════════════

@@ -1,6 +1,6 @@
 # ⚡ Hoopla Asistencia
 
-App de Slack para el registro de asistencia del equipo (~32 personas): entrada, almuerzo y salida con verificación desde computadora, horarios individuales, horas extra aprobadas por admin, reportes automáticos y dashboard web.
+App de Slack para el registro de asistencia del equipo (~32 personas): entrada, almuerzo y salida con verificación desde computadora, horarios individuales, cierre automático del día, reportes automáticos y dashboard web.
 
 **Stack**: Node.js · @slack/bolt (HTTP mode con ExpressReceiver) · SQLite (better-sqlite3) · Express · node-cron · exceljs. Timezone forzado: `America/Argentina/Buenos_Aires`.
 
@@ -33,12 +33,11 @@ Cada persona ve **su propio estado** — nunca datos de otros:
 - Escribirle **`horarios`** al bot: el mismo resumen en Slack.
 - El balance se resetea **cada lunes**.
 
-### Cierre del día y horas extra
-Al horario de salida de cada persona, si no marcó salida, el bot manda DM con dos botones:
+### Cierre del día
+Al horario de salida de cada persona, si no marcó salida, el bot manda DM con el botón **Marcar salida**:
 - **Marcar salida** → registra con hora del servidor. La salida manual **no se puede cambiar**.
-- **Necesito 30 min más** → pedido al canal admin con Aprobar/Rechazar. Aprobado una vez, el bot pregunta "¿Seguís trabajando?" cada 30 minutos **sin nueva aprobación**. Cada bloque queda registrado como horas extra.
 - **Sin respuesta en 20 minutos** → salida automática registrada **al horario de salida de la persona** con flag `auto_closed_sin_respuesta` (visible en reportes y dashboard). Si falta el almuerzo, se imputa 13:00–14:00.
-- El auto-cierre se puede **corregir una sola vez** escribiéndole `marcar` al bot (el valor original queda loggeado). Si el pedido de extra queda pendiente sin respuesta del admin, la jornada no se auto-cierra (aparece como anomalía en el resumen de las 19:00).
+- El auto-cierre se puede **corregir una sola vez** escribiéndole `marcar` al bot: la salida pasa a la hora actual y el valor original queda loggeado.
 
 ### Presencia y pings
 - **Presencia Slack** (active/away): polling cada 15 minutos para cada persona trackeada, solo dentro de su horario laboral. Alimenta el % de presencia en reportes.
@@ -49,8 +48,8 @@ Al horario de salida de cada persona, si no marcó salida, el bot manda DM con d
 |---|---|
 | Entrada personal +5 min | DM si no fichó (respeta feriados/vacaciones/ausencias/novedades) |
 | Entrada personal +60 min | Alerta al canal admin con faltantes |
-| 19:00 | Resumen diario **por excepción**: solo anomalías (tardes, ausencias sin novedad, auto-cierres, intentos mobile, extras). Si no hay: "Sin novedades, N presentes" |
-| Viernes 18:00 | Reporte semanal: por persona, horas vs esperadas, tardes, auto-cierres, extras |
+| 19:00 | Resumen diario **por excepción**: solo anomalías (tardes, ausencias sin novedad, auto-cierres, intentos mobile). Si no hay: "Sin novedades, N presentes" |
+| Viernes 18:00 | Reporte semanal: por persona, horas vs esperadas, tardes, auto-cierres |
 | 1ro de cada mes 09:00 | Reporte mensual + Excel al canal (3 hojas: detalle diario, resumen por persona, novedades) |
 
 ### Qué se le puede escribir al bot (todo por DM)
@@ -74,7 +73,7 @@ Al horario de salida de cada persona, si no marcó salida, el bot manda DM con d
 
 `admin` solo (sin argumentos) muestra la lista completa.
 
-Al agregar a alguien al tracking, recibe un **DM de onboarding**: qué registra el sistema, qué ve el admin, cómo marcar, su horario y cómo pedir extras o avisar ausencias.
+Al agregar a alguien al tracking, recibe un **DM de onboarding**: qué registra el sistema, qué ve el admin, cómo marcar, su horario, cómo se cierra el día y cómo avisar ausencias.
 
 ### Dashboard web (`/dashboard`)
 - **Hoy**: presentes, faltantes, jornada completa, horas del equipo.
@@ -121,7 +120,7 @@ Protegido opcionalmente con `DASHBOARD_TOKEN` (basic auth).
    message.im        (mensajes directos al bot)
    ```
 
-4. **Interactivity** (*Interactivity & Shortcuts*): activar y poner Request URL `https://TU-DOMINIO/slack/events` (para los botones de menú, cierre, extras y pings).
+4. **Interactivity** (*Interactivity & Shortcuts*): activar y poner Request URL `https://TU-DOMINIO/slack/events` (para los botones de menú, cierre y pings).
 
 5. **App Home** (*App Home*): en *Show Tabs*, activar **Messages Tab** y tildar *"Allow users to send Slash commands and messages from the messages tab"* — sin esto la gente no puede escribirle al bot. La pestaña Home puede quedar desactivada (no se usa).
 
@@ -181,11 +180,11 @@ Exponer con `ngrok http 3000` y usar `https://xxxx.ngrok.io/slack/events` en la 
 
 ```
 src/
-├── app.js           # Bolt + router de DMs + botones (menú, cierre, extras, pings)
+├── app.js           # Bolt + router de DMs + botones (menú, cierre, pings)
 ├── dmrouter.js      # Interpreta lo que la gente le escribe al bot (marcar/horarios/admin)
 ├── admin.js         # Mensajes "admin ..." (personas, novedades, monitoreo, reportes, export)
 ├── database.js      # Schema SQLite + queries (users, registros, tokens, novedades,
-│                    #   extras, presencia, pings, cierres, intentos_mobile)
+│                    #   presencia, pings, cierres, intentos_mobile)
 ├── scheduler.js     # Motor por minuto (horarios personales) + crons fijos
 ├── activity.js      # Presencia cada 15 min + pings dirigidos
 ├── balance.js       # Balance semanal individual (semáforo, compensación)

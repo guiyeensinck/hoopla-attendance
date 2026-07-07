@@ -77,7 +77,7 @@ module.exports = {
 • Tu presencia en Slack (activo/ausente) únicamente dentro de tu horario laboral.
 
 *¿Qué ve el admin?*
-Tus horarios marcados, llegadas tarde, cierres automáticos y horas extra. Nadie más del equipo ve tus datos.
+Tus horarios marcados, llegadas tarde y cierres automáticos. Nadie más del equipo ve tus datos.
 
 *¿Cómo marco?*
 Escribime *marcar* acá en este chat (como le escribirías a cualquier compañero). Te mando un link de un solo uso (dura 5 min) que se abre *desde la computadora*. La hora la pone el servidor.
@@ -85,8 +85,8 @@ Escribime *marcar* acá en este chat (como le escribirías a cualquier compañer
 *Tu horario asignado*
 🕐 ${user.hora_entrada} a ${user.hora_salida} — ${user.carga_horaria}hs por día. Si está mal, avisale a tu admin.
 
-*¿Horas extra?*
-Cuando llegue tu horario de salida y sigas trabajando, el bot te va a escribir: elegí "Necesito 30 min más" y un admin lo aprueba. Después se renueva cada 30 min sin nueva aprobación.
+*¿Y al final del día?*
+Cuando llegue tu horario de salida, si todavía no marcaste te escribo con un botón para cerrar el día. Si no respondés en 20 minutos, registro tu salida a tu horario automáticamente (podés corregirla una vez si seguías trabajando).
 
 *¿Ausencias, médico, vacaciones?*
 Avisale a tu admin, que las carga en el sistema para que no te cuenten como falta.
@@ -101,24 +101,11 @@ Escribime *horarios* cuando quieras ver tu estado del día y tu balance semanal.
 
   // ─── Cierre del día ───────────────────────────────────────────────
   cierre: {
-    dm: (hora) => `🌆 *Llegó tu horario de salida (${hora}).* ¿Cerramos el día?`,
+    dm: (hora) => `🌆 *Llegó tu horario de salida (${hora}).* ¿Cerramos el día?\n_Si no respondés en 20 minutos, registro tu salida a las ${hora} automáticamente (después podés corregirla una vez si seguías trabajando)._`,
     btnSalida: '🔴 Marcar salida',
-    btnExtra: '⏳ Necesito 30 min más',
     salidaRegistrada: (hora) => `✅ Salida registrada a las *${hora}*. ¡Buen descanso!`,
     yaCerrado: '✅ Tu salida ya estaba registrada.',
     autoCerrado: (hora) => `🔒 No respondiste, así que registré tu salida automáticamente a las *${hora}* (tu horario). Si seguías trabajando, podés corregirla una sola vez: escribime *marcar*.`,
-    extraPedida: '📨 Le pedí autorización al admin para tus 30 minutos extra. Te aviso apenas responda.',
-    extraAprobada: (por) => `✅ *${por}* aprobó tus horas extra. Tenés 30 minutos más — te vuelvo a preguntar cuando terminen.`,
-    extraRechazada: 'El admin no aprobó la extensión. Marcá tu salida cuando puedas:',
-    pregunta: '⏳ *Se cumplieron los 30 minutos.* ¿Seguís trabajando?',
-    btnSeguir: '✅ Sí, 30 más',
-    extraRenovada: '✅ Anotado: 30 minutos más de horas extra.',
-    cierreLimite: (hora) => `🔒 No respondiste la consulta, así que cerré tu jornada a las *${hora}* (fin de tu último bloque extra).`,
-    adminPedido: (nombre, hora) => `⏳ *${nombre}* pide 30 minutos extra (su salida era ${hora}).`,
-    btnAprobar: '✅ Aprobar',
-    btnRechazar: '❌ Rechazar',
-    adminAprobado: (nombre, por) => `✅ Horas extra de *${nombre}* aprobadas por ${por}.`,
-    adminRechazado: (nombre, por) => `❌ Horas extra de *${nombre}* rechazadas por ${por}.`,
   },
 
   // ─── Pings dirigidos ──────────────────────────────────────────────

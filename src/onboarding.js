@@ -4,7 +4,7 @@ const txt = require('./texts');
 /**
  * Suma una persona al tracking y le manda el DM de onboarding:
  * qué registra el sistema, qué ve el admin, cómo marcar, su horario
- * y cómo pedir horas extra o avisar ausencias.
+ * y cómo avisar ausencias.
  */
 const agregarAlTracking = async (client, slackId) => {
   let nombre = slackId;

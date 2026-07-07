@@ -66,14 +66,13 @@ const setupScheduler = (app) => {
           faltantesBatch.push(user);
         }
 
-        // 3. Horario de salida: DM de cierre con botones
+        // 3. Horario de salida: DM de cierre con botón
         if (dia.entrada && !dia.salida && nowM >= salidaM && nowM <= salidaM + VENTANA_CIERRE && !db.getCierre(uid, fecha)) {
           db.setCierre(uid, fecha, { estado: 'esperando', dm_hora: t.currentTime() });
           await dm(uid, txt.cierre.dm(user.hora_salida), [
             { type: 'section', text: { type: 'mrkdwn', text: txt.cierre.dm(user.hora_salida) } },
             { type: 'actions', elements: [
               { type: 'button', text: { type: 'plain_text', text: txt.cierre.btnSalida }, style: 'primary', action_id: 'cierre_salida' },
-              { type: 'button', text: { type: 'plain_text', text: txt.cierre.btnExtra }, action_id: 'cierre_extra' },
             ] },
           ]);
         }
@@ -88,23 +87,6 @@ const setupScheduler = (app) => {
         // Sin respuesta al DM de cierre en 20 min → salida AL horario personal
         if (cierre.estado === 'esperando' && nowM >= t.toMin(cierre.dm_hora) + TIMEOUT_CIERRE) {
           await autoCerrar(user, fecha, user.hora_salida, txt.cierre.autoCerrado(user.hora_salida));
-        }
-
-        // Fin del bloque extra → "¿Seguís trabajando?" (sin nueva aprobación)
-        if (cierre.estado === 'extra_activa' && nowM >= t.toMin(cierre.extra_hasta)) {
-          db.setCierre(uid, fecha, { estado: 'pregunta', pregunta_hora: t.currentTime() });
-          await dm(uid, txt.cierre.pregunta, [
-            { type: 'section', text: { type: 'mrkdwn', text: txt.cierre.pregunta } },
-            { type: 'actions', elements: [
-              { type: 'button', text: { type: 'plain_text', text: txt.cierre.btnSeguir }, style: 'primary', action_id: 'extra_seguir' },
-              { type: 'button', text: { type: 'plain_text', text: txt.cierre.btnSalida }, action_id: 'cierre_salida' },
-            ] },
-          ]);
-        }
-
-        // Sin respuesta a la pregunta en 20 min → cierre al fin del último bloque
-        if (cierre.estado === 'pregunta' && nowM >= t.toMin(cierre.pregunta_hora) + TIMEOUT_CIERRE) {
-          await autoCerrar(user, fecha, cierre.extra_hasta, txt.cierre.cierreLimite(cierre.extra_hasta));
         }
       } catch (err) {
         console.error(`[scheduler] Error con ${user.nombre}: ${err.message}`);
@@ -165,7 +147,7 @@ const setupScheduler = (app) => {
   }, { timezone: t.TZ });
 
   console.log('[scheduler] Cron configurado (TZ America/Argentina/Buenos_Aires):');
-  console.log('  → Tick por minuto: recordatorios, cierre y extras según horario PERSONAL');
+  console.log('  → Tick por minuto: recordatorios y cierre según horario PERSONAL');
   console.log('  → Presencia Slack: cada 15 min en horario laboral de cada persona');
   console.log('  → Pings dirigidos: solo con modo activado por admin');
   console.log('  → Resumen diario (solo anomalías): L-V 19:00');

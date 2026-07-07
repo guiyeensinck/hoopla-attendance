@@ -29,6 +29,13 @@ if (esquemaViejo) {
   db.pragma('foreign_keys = ON');
 }
 
+// Migración: se eliminó el flujo de horas extra (tablas extras y cierres viejas)
+if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='extras'").get()) {
+  db.exec('DROP TABLE extras');
+  db.exec('DROP TABLE IF EXISTS cierres');
+  console.log('[db] Flujo de horas extra eliminado — tablas extras/cierres recreadas');
+}
+
 // ─── Schema ────────────────────────────────────────────────────────
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
@@ -79,15 +86,6 @@ db.exec(`
     created_at  TEXT DEFAULT (datetime('now'))
   );
 
-  CREATE TABLE IF NOT EXISTS extras (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id      TEXT NOT NULL,
-    fecha        TEXT NOT NULL,
-    aprobado_por TEXT,
-    bloques      INTEGER DEFAULT 0,   -- bloques de 30 min
-    UNIQUE(user_id, fecha)
-  );
-
   CREATE TABLE IF NOT EXISTS presencia (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id  TEXT NOT NULL,
@@ -117,10 +115,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS cierres (
     user_id       TEXT NOT NULL,
     fecha         TEXT NOT NULL,
-    estado        TEXT NOT NULL,   -- esperando | extra_pendiente | extra_activa | pregunta | cerrado
-    dm_hora       TEXT,            -- cuándo se mandó el DM de cierre / rechazo
-    extra_hasta   TEXT,            -- fin del bloque extra vigente
-    pregunta_hora TEXT,            -- cuándo se mandó "¿seguís trabajando?"
+    estado        TEXT NOT NULL,   -- esperando | cerrado
+    dm_hora       TEXT,            -- cuándo se mandó el DM de cierre
     PRIMARY KEY (user_id, fecha)
   );
 
@@ -336,30 +332,18 @@ const consumeToken = (token) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════
-// CIERRES / EXTRAS
+// CIERRES
 // ═══════════════════════════════════════════════════════════════════
 const getCierre = (userId, fecha) =>
   db.prepare('SELECT * FROM cierres WHERE user_id = ? AND fecha = ?').get(userId, fecha);
 
 const setCierre = (userId, fecha, fields) => {
   const cur = getCierre(userId, fecha) || {};
-  const merged = { estado: null, dm_hora: null, extra_hasta: null, pregunta_hora: null, ...cur, ...fields };
-  db.prepare(`INSERT INTO cierres (user_id, fecha, estado, dm_hora, extra_hasta, pregunta_hora)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(user_id, fecha) DO UPDATE SET estado = excluded.estado, dm_hora = excluded.dm_hora,
-      extra_hasta = excluded.extra_hasta, pregunta_hora = excluded.pregunta_hora`)
-    .run(userId, fecha, merged.estado, merged.dm_hora, merged.extra_hasta, merged.pregunta_hora);
+  const merged = { estado: null, dm_hora: null, ...cur, ...fields };
+  db.prepare(`INSERT INTO cierres (user_id, fecha, estado, dm_hora) VALUES (?, ?, ?, ?)
+    ON CONFLICT(user_id, fecha) DO UPDATE SET estado = excluded.estado, dm_hora = excluded.dm_hora`)
+    .run(userId, fecha, merged.estado, merged.dm_hora);
 };
-
-/** Suma un bloque de 30 min de horas extra */
-const addBloqueExtra = (userId, fecha, aprobadoPor) => {
-  db.prepare(`INSERT INTO extras (user_id, fecha, aprobado_por, bloques) VALUES (?, ?, ?, 1)
-    ON CONFLICT(user_id, fecha) DO UPDATE SET bloques = bloques + 1`).run(userId, fecha, aprobadoPor);
-};
-
-const getExtrasRange = (from, to) => db.prepare(`
-  SELECT e.*, u.nombre FROM extras e JOIN users u ON u.slack_id = e.user_id
-  WHERE e.fecha BETWEEN ? AND ? ORDER BY e.fecha, u.nombre`).all(from, to);
 
 // ═══════════════════════════════════════════════════════════════════
 // PRESENCIA
@@ -447,15 +431,13 @@ const faltantes = (fecha) => db.prepare(`
 const resumenPersonas = (from, to) => {
   const users = getTracked();
   const dias = getDias(from, to);
-  const extras = getExtrasRange(from, to);
   return users.map(u => {
     const propios = dias.filter(d => d.user_id === u.slack_id);
     const horas = Math.round(propios.reduce((s, d) => s + (d.horas || 0), 0) * 100) / 100;
     const esperadas = Math.round(diasEsperados(u.slack_id, from, to) * u.carga_horaria * 100) / 100;
     const tardes = propios.filter(d => d.tarde_min > 0).length;
     const autoCierres = propios.filter(d => d.auto_closed).length;
-    const bloquesExtra = extras.filter(e => e.user_id === u.slack_id).reduce((s, e) => s + e.bloques, 0);
-    return { ...u, horas, esperadas, tardes, autoCierres, extraHs: bloquesExtra * 0.5, diasTrabajados: propios.filter(d => d.entrada).length };
+    return { ...u, horas, esperadas, tardes, autoCierres, diasTrabajados: propios.filter(d => d.entrada).length };
   });
 };
 
@@ -465,7 +447,7 @@ module.exports = {
   getDia, nextTipo, horasDia, registrar, imputarAlmuerzo, corregirSalida, getDias,
   addNovedad, getNovedadesFecha, getNovedadesRange, isFeriado, hasNovedad, isExento, diasEsperados,
   createToken, peekToken, consumeToken,
-  getCierre, setCierre, addBloqueExtra, getExtrasRange,
+  getCierre, setCierre,
   logPresencia, presenciaSummary,
   addPingModo, getPingModoActivo, getPingModosEnRango, createPing, respondPing, expirarPings, pingsHoyCount, pingSummary,
   logIntentoMobile, getIntentosMobile, avisoEnviado, marcarAviso,

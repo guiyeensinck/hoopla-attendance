@@ -65,8 +65,8 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
 
         // ─── Personas ─────────────────────────────────────────────
         case 'agregarme': {
-          const u = await agregarAlTracking(client, adminId);
-          await say(`✅ Listo, *${u.nombre}*: estás en el seguimiento. Te mandé el detalle por DM.`);
+          // El DM de onboarding llega en esta misma conversación — es la confirmación.
+          await agregarAlTracking(client, adminId);
           break;
         }
         case 'agregartodos': {
@@ -86,7 +86,7 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
           const uid = extractMention(parts[1] || '');
           if (!uid) { await say(txt.errores.faltaMencion); return; }
           const u = await agregarAlTracking(client, uid);
-          await say(`✅ *${u.nombre}* agregado al seguimiento (le mandé el onboarding por DM).`);
+          await say(`✅ *${u.nombre}* agregado al seguimiento — le expliqué cómo funciona por DM.`);
           break;
         }
         case 'sacar': {

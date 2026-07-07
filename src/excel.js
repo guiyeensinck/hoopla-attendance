@@ -60,7 +60,6 @@ const generarExcel = async (from, to, label) => {
     { header: 'Diferencia', key: 'diff', width: 11 },
     { header: 'Llegadas tarde', key: 'tardes', width: 14 },
     { header: 'Auto-cierres', key: 'auto', width: 12 },
-    { header: 'Horas extra', key: 'extra', width: 11 },
   ];
   header(ws2, 'FF00B894');
   for (const p of db.resumenPersonas(from, to)) {
@@ -68,7 +67,7 @@ const generarExcel = async (from, to, label) => {
       nombre: p.nombre, horario: `${p.hora_entrada}–${p.hora_salida}`,
       dias: p.diasTrabajados, horas: p.horas, esperadas: p.esperadas,
       diff: Math.round((p.horas - p.esperadas) * 100) / 100,
-      tardes: p.tardes, auto: p.autoCierres, extra: p.extraHs,
+      tardes: p.tardes, auto: p.autoCierres,
     });
   }
 
