@@ -330,6 +330,9 @@ const getNovedadesRange = (from, to) => db.prepare(`
 const isFeriado = (fecha) =>
   db.prepare("SELECT 1 FROM novedades WHERE fecha = ? AND tipo = 'feriado' AND user_id IS NULL").get(fecha) != null;
 
+const getFeriados = (desde) => db.prepare(
+  "SELECT fecha, motivo FROM novedades WHERE tipo = 'feriado' AND user_id IS NULL AND fecha >= ? ORDER BY fecha").all(desde);
+
 const hasNovedad = (userId, fecha, tipo) =>
   db.prepare('SELECT 1 FROM novedades WHERE fecha = ? AND tipo = ? AND user_id = ?').get(fecha, tipo, userId) != null;
 
@@ -590,7 +593,7 @@ module.exports = {
   db, TIPOS_ORDEN, NOVEDADES_EXENTAS,
   upsertUser, getUser, getAllUsers, getTracked, setTracked, setAdmin, setHorario, setEquipo, isAdmin, isSuperAdmin,
   getDia, nextTipo, horasDia, registrar, imputarAlmuerzo, corregirSalida, getDias,
-  addNovedad, getNovedadesFecha, getNovedadesRange, isFeriado, hasNovedad, isExento, diasEsperados,
+  addNovedad, getNovedadesFecha, getNovedadesRange, isFeriado, getFeriados, hasNovedad, isExento, diasEsperados,
   createToken, peekToken, consumeToken,
   getCierre, setCierre,
   logPresencia, presenciaSummary, presenciaPorDia, ultimaActividad,

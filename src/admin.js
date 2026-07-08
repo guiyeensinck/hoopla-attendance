@@ -28,7 +28,7 @@ const USO = `⚙️ *Gestión de asistencia* — escribime \`admin ...\` acá en
 \`admin reporte proyectos [semana|mes]\` — horas por cliente → proyecto → persona
 
 *Novedades*
-\`admin feriado FECHA Motivo\` — aplica a todos
+\`admin feriado FECHA Motivo\` — aplica a todos (acepta varias líneas) · \`admin feriados\` — ver cargados
 \`admin vacaciones @user DESDE HASTA\` · \`admin medico @user FECHA Motivo\`
 \`admin ausente @user FECHA Motivo\` · \`admin libre @user FECHA\` · \`admin salida @user FECHA Motivo\`
 \`admin remoto @user FECHA\` — habilita fichaje mobile ese día
@@ -218,11 +218,26 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
 
         // ─── Novedades ────────────────────────────────────────────
         case 'feriado': {
-          const fecha = parts[1];
-          if (!t.isValidDate(fecha)) { await say(txt.errores.fechaInvalida); return; }
-          const motivo = parts.slice(2).join(' ') || 'Feriado';
-          db.addNovedad(null, 'feriado', fecha, motivo, adminId);
-          await say(`🏖️ Feriado: *${fecha}* — ${motivo} (aplica a todos).`);
+          // Acepta varias líneas de una: "FECHA Motivo" por línea
+          const bloque = (texto || '').replace(/^\s*feriado\s*/i, '');
+          const lineas = bloque.split('\n').map(s => s.trim()).filter(Boolean);
+          if (!lineas.length) { await say('⚠️ Uso: `admin feriado YYYY-MM-DD Motivo` (una o varias líneas).'); return; }
+          const resultados = [];
+          for (const linea of lineas) {
+            const [fecha, ...motivoArr] = linea.split(/\s+/);
+            if (!t.isValidDate(fecha)) { resultados.push(`⚠️ Fecha inválida: \`${linea}\``); continue; }
+            if (db.isFeriado(fecha)) { resultados.push(`ℹ️ ${fecha} ya estaba cargado`); continue; }
+            db.addNovedad(null, 'feriado', fecha, motivoArr.join(' ') || 'Feriado', adminId);
+            resultados.push(`🏖️ ${fecha} — ${motivoArr.join(' ') || 'Feriado'}`);
+          }
+          await say(lineas.length === 1 ? `${resultados[0]} (aplica a todos).` : `📅 *Feriados cargados:*\n${resultados.join('\n')}`);
+          break;
+        }
+        case 'feriados': {
+          const feriados = db.getFeriados(t.today());
+          if (!feriados.length) { await say('📅 No hay feriados cargados de hoy en adelante.'); return; }
+          const lineas = feriados.map(f => `• \`${f.fecha}\` (${t.dayjs(f.fecha).format('ddd')}) — ${f.motivo || 'Feriado'}`);
+          await say(`🗓️ *Feriados cargados (${feriados.length}):*\n${lineas.join('\n')}`);
           break;
         }
         case 'vacaciones': {
