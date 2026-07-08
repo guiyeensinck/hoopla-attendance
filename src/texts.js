@@ -99,12 +99,15 @@ Escribime *horarios* cuando quieras ver tu estado del día y tu balance semanal.
   // ─── Recordatorios ────────────────────────────────────────────────
   recordatorios: {
     entrada: (hora) => `⏰ *¿Arrancaste?* Tu horario de entrada era ${hora} y todavía no marcaste. Escribime *marcar* y te mando el link.`,
+    almuerzoInicio: '🍽️ *¿Saliste a almorzar?* No marcaste el inicio del almuerzo — escribime *marcar* cuando arranques.',
+    almuerzoFin: (inicio) => `⏱️ Marcaste inicio de almuerzo a las ${inicio} y ya pasó más de una hora. Si volviste, escribime *marcar* para cerrar el almuerzo.`,
     faltantesAdmin: (lista) => `⚠️ *Sin fichar pasada 1 hora de su horario de entrada:*\n${lista}`,
   },
 
   // ─── Cierre del día ───────────────────────────────────────────────
   cierre: {
-    dm: (hora) => `🌆 *Llegó tu horario de salida (${hora}).* ¿Cerramos el día?\n_Si no respondés en 20 minutos, registro tu salida automáticamente según tu última actividad detectada (como máximo ${hora}). Después podés corregirla una vez si seguías trabajando._`,
+    dm: (hora) => `🌆 *Llegó tu horario de salida (${hora}).* ¿Cerramos el día?\n_Si no respondés en 30 minutos, registro tu salida automáticamente según tu última actividad detectada (como máximo ${hora}). Después podés corregirla una vez si seguías trabajando._`,
+    recordatorio: '🔔 *Seguís sin marcar tu salida.* Tocá el botón o escribime *marcar* — si no, en un rato la registro automáticamente según tu última actividad.',
     btnSalida: '🔴 Marcar salida',
     salidaRegistrada: (hora) => `✅ Salida registrada a las *${hora}*. ¡Buen descanso!`,
     yaCerrado: '✅ Tu salida ya estaba registrada.',

@@ -36,7 +36,7 @@ Cada persona ve **su propio estado** — nunca datos de otros:
 ### Cierre del día
 Al horario de salida de cada persona, si no marcó salida, el bot manda DM con el botón **Marcar salida**:
 - **Marcar salida** → registra con hora del servidor. La salida manual **no se puede cambiar**.
-- **Sin respuesta en 20 minutos** → salida automática con flag de auto-cierre, estampada en la **última actividad detectada** del día (último check de presencia "activo" en Slack o última marcación — error máx. ~15 min), con tope en su horario. Así, quien dejó de trabajar 18:00 con salida 18:30 queda registrado ~18:00 y el reporte muestra los minutos de anticipo. Sin datos de presencia ese día, se estampa el horario personal.
+- **Sin respuesta en 30 minutos** (con recordatorios a +10 y +20) → salida automática con flag de auto-cierre, estampada en la **última actividad detectada** del día (último check de presencia "activo" en Slack o última marcación — error máx. ~15 min), con tope en su horario. Así, quien dejó de trabajar 18:00 con salida 18:30 queda registrado ~18:00 y el reporte muestra los minutos de anticipo. Sin datos de presencia ese día, se estampa el horario personal.
 - Si la salida quedó después de las 14:00 y falta el almuerzo, se imputa 13:00–14:00.
 - El auto-cierre se puede **corregir una sola vez** escribiéndole `marcar` al bot: la salida pasa a la hora actual y el valor original queda loggeado.
 
@@ -47,10 +47,15 @@ Al horario de salida de cada persona, si no marcó salida, el bot manda DM con e
 - **Pings de actividad** ("Acá estoy", timeout 10 min): **no son régimen general**. Solo se activan con `admin ping @user [días]` para una persona puntual, que **es notificada** de que el modo está activo. Se registra respuesta, tiempo de respuesta o ping perdido.
 
 ### Recordatorios automáticos (relativos al horario personal)
+Los recordatorios a la persona se repiten **cada 10 minutos** hasta que marca (umbrales ajustables en `CFG` de `src/scheduler.js`). Respetan feriados/vacaciones/ausencias/novedades y solo aplican a personas trackeadas.
+
 | Cuándo | Qué |
 |---|---|
-| Entrada personal +5 min | DM si no fichó (respeta feriados/vacaciones/ausencias/novedades) |
-| Entrada personal +60 min | Alerta al canal admin con faltantes |
+| Entrada personal +10' | DM cada 10' hasta que marque entrada (tope: 90 minutos) |
+| Entrada personal +60 min | Alerta al canal admin con faltantes (una vez) |
+| 13:30 a 15:00 | DM cada 10' si no marcó el inicio del almuerzo |
+| Inicio almuerzo +60' | DM cada 10' si no marcó el fin del almuerzo (tope: 1 hora) |
+| Horario de salida | DM de cierre con botón + recordatorios a +10' y +20'; **auto-cierre a los 30'** por última actividad |
 | 19:00 | Resumen diario **por excepción**: solo anomalías (tardes, ausencias sin novedad, auto-cierres, intentos mobile). Si no hay: "Sin novedades, N presentes" |
 | 19:00 | **Patrones detectados** (solo si hay nuevos): ver sección siguiente |
 | Lunes 09:00 | **Resumen ejecutivo**: semana pasada en números + desvíos + novedades de esta semana |

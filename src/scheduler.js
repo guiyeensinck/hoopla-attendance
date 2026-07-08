@@ -9,12 +9,21 @@ const { promptImputacion } = require('./proyectos');
 const { runPresenceCheck, runPingCycle } = require('./activity');
 const { generarExcel } = require('./excel');
 
-// Ventanas de tolerancia: si la app estuvo caída (deploy de Railway) el aviso
-// sale apenas vuelve, pero no horas más tarde. La dedupe la hace la tabla avisos.
-const VENTANA_RECORDATORIO = 30;  // min para el recordatorio de entrada
-const VENTANA_ALERTA = 30;        // min para la alerta admin de faltantes
-const VENTANA_CIERRE = 180;       // min para mandar el DM de cierre
-const TIMEOUT_CIERRE = 20;        // min sin respuesta al DM de cierre → auto-cierre
+// Configuración de recordatorios — ajustable acá.
+// Los recordatorios se repiten cada INTERVALO minutos hasta que la persona
+// marca o se llega al tope. La dedupe por "slot" vive en la tabla avisos
+// (sobrevive reinicios y no rafaguea si la app estuvo caída).
+const CFG = {
+  INTERVALO: 10,                    // min entre recordatorios
+  TOPE_ENTRADA: 90,                 // insiste con la entrada hasta 90' después del horario
+  ALMUERZO_DESDE: 13 * 60 + 30,     // 13:30 — empieza a recordar el inicio de almuerzo
+  ALMUERZO_HASTA: 15 * 60,          // 15:00 — deja de insistir
+  TOPE_FIN_ALMUERZO: 60,            // tras inicio+60', insiste 1 hora con el fin de almuerzo
+  TIMEOUT_CIERRE: 30,               // min desde el DM de cierre hasta el auto-cierre (recordatorios a +10 y +20)
+};
+
+const VENTANA_ALERTA = 30;          // min de ventana para la alerta admin de faltantes
+const VENTANA_CIERRE = 180;         // min de ventana para mandar el DM de cierre
 
 /**
  * Motor de recordatorios y cierre: TODOS los horarios son relativos al
@@ -55,6 +64,23 @@ const setupScheduler = (app) => {
     console.log(`[cierre] Auto-cierre de ${user.nombre} → ${hora}${usaActividad ? ' (última actividad)' : ' (horario)'}`);
   };
 
+  // Manda un recordatorio como máximo una vez por "slot" de 10 minutos
+  // (dedupe persistente en la tabla avisos, con log para diagnóstico)
+  const recordar = async (uid, fecha, tipoBase, slot, mensaje, blocks) => {
+    const tipo = `${tipoBase}_${slot}`;
+    if (db.avisoEnviado(uid, fecha, tipo)) return;
+    db.marcarAviso(uid, fecha, tipo);
+    await dm(uid, mensaje, blocks);
+    console.log(`[recordatorio] ${tipoBase} #${slot} → ${uid}`);
+  };
+
+  const botonSalida = (texto) => [
+    { type: 'section', text: { type: 'mrkdwn', text: texto } },
+    { type: 'actions', elements: [
+      { type: 'button', text: { type: 'plain_text', text: txt.cierre.btnSalida }, style: 'primary', action_id: 'cierre_salida' },
+    ] },
+  ];
+
   // ─── Tick por minuto ───────────────────────────────────────────────
   const tick = async () => {
     const fecha = t.today();
@@ -69,39 +95,57 @@ const setupScheduler = (app) => {
       const dia = db.getDia(uid, fecha);
 
       try {
-        // 1. Entrada +5 min: recordatorio si no fichó
-        if (!dia.entrada && nowM >= entradaM + 5 && nowM <= entradaM + 5 + VENTANA_RECORDATORIO && !db.avisoEnviado(uid, fecha, 'rec_entrada')) {
-          db.marcarAviso(uid, fecha, 'rec_entrada');
-          await dm(uid, txt.recordatorios.entrada(user.hora_entrada));
+        // 1. Entrada: cada 10 min desde su horario hasta que marque (tope 90')
+        if (!dia.entrada && nowM >= entradaM + CFG.INTERVALO && nowM <= entradaM + CFG.TOPE_ENTRADA) {
+          const slot = Math.floor((nowM - entradaM) / CFG.INTERVALO);
+          await recordar(uid, fecha, 'rec_entrada', slot, txt.recordatorios.entrada(user.hora_entrada));
         }
 
-        // 2. Entrada +60 min: alerta al canal admin
+        // 2. Entrada +60 min: alerta al canal admin (una sola vez)
         if (!dia.entrada && nowM >= entradaM + 60 && nowM <= entradaM + 60 + VENTANA_ALERTA && !db.avisoEnviado(uid, fecha, 'alerta_admin')) {
           db.marcarAviso(uid, fecha, 'alerta_admin');
           faltantesBatch.push(user);
         }
 
-        // 3. Horario de salida: DM de cierre con botón
-        if (dia.entrada && !dia.salida && nowM >= salidaM && nowM <= salidaM + VENTANA_CIERRE && !db.getCierre(uid, fecha)) {
-          db.setCierre(uid, fecha, { estado: 'esperando', dm_hora: t.currentTime() });
-          await dm(uid, txt.cierre.dm(user.hora_salida), [
-            { type: 'section', text: { type: 'mrkdwn', text: txt.cierre.dm(user.hora_salida) } },
-            { type: 'actions', elements: [
-              { type: 'button', text: { type: 'plain_text', text: txt.cierre.btnSalida }, style: 'primary', action_id: 'cierre_salida' },
-            ] },
-          ]);
+        // 3. Inicio de almuerzo: cada 10 min entre 13:30 y 15:00 si no lo marcó
+        if (dia.entrada && !dia.salida && !dia.almuerzo_inicio && nowM >= CFG.ALMUERZO_DESDE && nowM <= CFG.ALMUERZO_HASTA) {
+          const slot = Math.floor((nowM - CFG.ALMUERZO_DESDE) / CFG.INTERVALO);
+          await recordar(uid, fecha, 'rec_alm_ini', slot, txt.recordatorios.almuerzoInicio);
         }
 
-        // 4. Estados del cierre
+        // 4. Fin de almuerzo: cada 10 min desde inicio+60' (tope 1 hora)
+        if (dia.almuerzo_inicio && !dia.almuerzo_fin && !dia.salida) {
+          const inicioM = t.toMin(dia.almuerzo_inicio.hora);
+          if (nowM >= inicioM + 60 + CFG.INTERVALO && nowM <= inicioM + 60 + CFG.TOPE_FIN_ALMUERZO) {
+            const slot = Math.floor((nowM - inicioM - 60) / CFG.INTERVALO);
+            await recordar(uid, fecha, 'rec_alm_fin', slot, txt.recordatorios.almuerzoFin(dia.almuerzo_inicio.hora));
+          }
+        }
+
+        // 5. Horario de salida: DM de cierre con botón
+        if (dia.entrada && !dia.salida && nowM >= salidaM && nowM <= salidaM + VENTANA_CIERRE && !db.getCierre(uid, fecha)) {
+          db.setCierre(uid, fecha, { estado: 'esperando', dm_hora: t.currentTime() });
+          await dm(uid, txt.cierre.dm(user.hora_salida), botonSalida(txt.cierre.dm(user.hora_salida)));
+          console.log(`[cierre] DM de cierre → ${user.nombre}`);
+        }
+
+        // 6. Estados del cierre
         const cierre = db.getCierre(uid, fecha);
         if (!cierre || cierre.estado === 'cerrado') continue;
 
         // La persona marcó salida por otra vía → cerrar el flujo
         if (dia.salida) { db.setCierre(uid, fecha, { estado: 'cerrado' }); continue; }
 
-        // Sin respuesta al DM de cierre en 20 min → auto-cierre
-        if (cierre.estado === 'esperando' && nowM >= t.toMin(cierre.dm_hora) + TIMEOUT_CIERRE) {
-          await autoCerrar(user, fecha);
+        if (cierre.estado === 'esperando') {
+          const dmM = t.toMin(cierre.dm_hora);
+          if (nowM >= dmM + CFG.TIMEOUT_CIERRE) {
+            // Sin respuesta → auto-cierre por última actividad
+            await autoCerrar(user, fecha);
+          } else if (nowM >= dmM + CFG.INTERVALO) {
+            // Recordatorios intermedios (a +10' y +20') con el botón
+            const slot = Math.floor((nowM - dmM) / CFG.INTERVALO);
+            await recordar(uid, fecha, 'rec_cierre', slot, txt.cierre.recordatorio, botonSalida(txt.cierre.recordatorio));
+          }
         }
       } catch (err) {
         console.error(`[scheduler] Error con ${user.nombre}: ${err.message}`);
@@ -116,6 +160,7 @@ const setupScheduler = (app) => {
   };
 
   cron.schedule('* * * * 1-5', () => tick().catch(e => console.error('[scheduler] tick:', e)), { timezone: t.TZ });
+  setupScheduler._tick = tick; // expuesto para tests
 
   // ─── Presencia cada 15 min ─────────────────────────────────────────
   cron.schedule('*/15 * * * 1-5', () => runPresenceCheck(app, soloUsers).catch(e => console.error('[presencia]', e)), { timezone: t.TZ });
@@ -178,7 +223,7 @@ const setupScheduler = (app) => {
   }, { timezone: t.TZ });
 
   console.log('[scheduler] Cron configurado (TZ America/Argentina/Buenos_Aires):');
-  console.log('  → Tick por minuto: recordatorios y cierre según horario PERSONAL');
+  console.log(`  → Recordatorios cada ${CFG.INTERVALO}': entrada (tope ${CFG.TOPE_ENTRADA}'), almuerzo (13:30-15:00), fin almuerzo, cierre (auto a los ${CFG.TIMEOUT_CIERRE}')`);
   console.log('  → Presencia Slack: cada 15 min en horario laboral de cada persona');
   console.log('  → Pings dirigidos: solo con modo activado por admin');
   console.log('  → Resumen diario (solo anomalías) + patrones: L-V 19:00');
@@ -206,4 +251,4 @@ const resolveChannelId = async (client, target) => {
   return target; // ya es un ID (C...)
 };
 
-module.exports = { setupScheduler };
+module.exports = { setupScheduler, CFG };
