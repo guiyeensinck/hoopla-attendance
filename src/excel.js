@@ -98,6 +98,7 @@ const generarExcel = async (from, to, label) => {
       { header: 'Persona', key: 'persona', width: 22 },
       { header: 'Cliente', key: 'cliente', width: 20 },
       { header: 'Proyecto', key: 'proyecto', width: 24 },
+      { header: 'Categoría', key: 'categoria', width: 14 },
       { header: 'Horas', key: 'horas', width: 9 },
     ];
     header(ws4, 'FFA29BFE');

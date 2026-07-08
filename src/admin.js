@@ -173,15 +173,23 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
             return;
           }
           if (sub === 'agregar') {
-            // "Cliente / Proyecto" — la barra separa; sin barra, proyecto sin cliente
-            const [cliente, nombre] = resto.includes('/')
-              ? resto.split('/').map(s => s.trim())
-              : [null, resto];
-            if (!nombre) { await say('⚠️ Falta el nombre del proyecto después de la `/`.'); return; }
-            const r = db.crearProyecto(nombre, cliente);
-            const etiqueta = r.proyecto.cliente ? `*${r.proyecto.cliente} / ${r.proyecto.nombre}*` : `*${r.proyecto.nombre}*`;
-            const msj = { creado: `✅ Proyecto ${etiqueta} creado.`, reactivado: `✅ Proyecto ${etiqueta} reactivado.`, ya_existe: `ℹ️ El proyecto ${etiqueta} ya existía${cliente ? ' — cliente actualizado' : ''}.` };
-            await say(msj[r.estado]);
+            // Acepta varias líneas de una: "Cliente / Proyecto" por línea.
+            // La barra separa cliente de proyecto; sin barra, sin cliente.
+            const bloque = (texto || '').replace(/^\s*proyecto\s+agregar\s*/i, '');
+            const lineas = bloque.split('\n').map(s => s.trim()).filter(Boolean);
+            if (!lineas.length) { await say('⚠️ Uso: `admin proyecto agregar Cliente / Proyecto` (una o varias líneas).'); return; }
+            const resultados = [];
+            for (const linea of lineas) {
+              const [cliente, nombre] = linea.includes('/')
+                ? linea.split('/').map(s => s.trim())
+                : [null, linea];
+              if (!nombre) { resultados.push(`⚠️ Línea inválida: \`${linea}\``); continue; }
+              const r = db.crearProyecto(nombre, cliente);
+              const etiqueta = r.proyecto.cliente ? `*${r.proyecto.cliente} / ${r.proyecto.nombre}*` : `*${r.proyecto.nombre}*`;
+              const icono = { creado: '✅', reactivado: '♻️', ya_existe: 'ℹ️' }[r.estado];
+              resultados.push(`${icono} ${etiqueta}${r.estado === 'ya_existe' ? ' (ya existía)' : ''}`);
+            }
+            await say(lineas.length === 1 ? resultados[0] : `🗂️ *Catálogo cargado:*\n${resultados.join('\n')}`);
           } else {
             const proyecto = buscarProyecto(resto);
             if (!proyecto) { await say(`⚠️ No encontré el proyecto *${resto}*.`); return; }

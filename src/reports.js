@@ -139,7 +139,13 @@ const reporteProyectos = (titulo, from, to) => {
       return `*${g.cli}* — ${g.horas}hs (${pct}%)\n${g.ps.map(lineaProyecto).join('\n')}`;
     });
 
-  return `${titulo} _(${t.fmtRange(from, to)})_\n\n${bloques.join('\n\n')}\n\nTotal imputado: *${totalGeneral}hs*`;
+  // Rollup por categoría de trabajo (solo si se usó)
+  const categorias = db.horasPorCategoria(from, to);
+  const lineaCategorias = categorias.some(c => c.categoria !== 'sin categoría')
+    ? `\nPor categoría: ${categorias.map(c => `${c.categoria} ${c.horas}hs`).join(' · ')}`
+    : '';
+
+  return `${titulo} _(${t.fmtRange(from, to)})_\n\n${bloques.join('\n\n')}\n\nTotal imputado: *${totalGeneral}hs*${lineaCategorias}`;
 };
 
 /**

@@ -11,20 +11,34 @@ const { normalize } = require('./dmrouter');
  * Mandar una nueva imputación el mismo día reemplaza la anterior.
  */
 
+// Categorías de trabajo (opcionales al imputar): "Jumbo 3 redes"
+const CATEGORIAS = ['campaña', 'redes', 'website', 'branding', 'btl', 'otro'];
+const CATEGORIA_ALIAS = { campana: 'campaña', web: 'website', pagina: 'website' };
+
+const normalizarCategoria = (token) => {
+  if (!token) return null;
+  const n = normalize(token);
+  const canonica = CATEGORIA_ALIAS[n] || CATEGORIAS.find(c => normalize(c) === n);
+  return canonica || undefined; // undefined = token presente pero inválido
+};
+
 /**
- * Intenta interpretar un mensaje como imputación: pares "nombre horas"
- * separados por coma. Devuelve [{nombre, horas}] o null si no matchea.
+ * Intenta interpretar un mensaje como imputación: pares "nombre horas
+ * [categoría]" separados por coma. Devuelve [{nombre, horas, categoria}]
+ * o null si no matchea.
  */
 const parsearImputacion = (raw) => {
   const partes = (raw || '').split(',').map(s => s.trim()).filter(Boolean);
   if (!partes.length) return null;
   const pares = [];
   for (const p of partes) {
-    const m = p.match(/^(.+?)\s+(\d+(?:[.,]\d+)?)\s*(?:hs?|horas?)?$/i);
+    const m = p.match(/^(.+?)\s+(\d+(?:[.,]\d+)?)\s*(?:hs?|horas?)?(?:\s+(\S+))?$/i);
     if (!m) return null;
     const horas = parseFloat(m[2].replace(',', '.'));
     if (!(horas > 0 && horas <= 16)) return null;
-    pares.push({ nombre: m[1].trim(), horas });
+    const categoria = normalizarCategoria(m[3]);
+    if (categoria === undefined) return null; // token final que no es una categoría → no es imputación
+    pares.push({ nombre: m[1].trim(), horas, categoria });
   }
   return pares;
 };
@@ -69,23 +83,24 @@ const procesarImputacion = (user, texto) => {
       const activos = db.getProyectos(true).map(x => x.nombre).join(', ');
       return `⚠️ No encontré el proyecto *${p.nombre}*.\nProyectos activos: ${activos}.\nFormato: \`Nike 4, Interno 1.5\``;
     }
-    resueltos.push({ proyecto_id: proyecto.id, nombre: proyecto.nombre, horas: p.horas });
+    resueltos.push({ proyecto_id: proyecto.id, nombre: proyecto.nombre, horas: p.horas, categoria: p.categoria });
   }
 
-  // Duplicados en el mismo mensaje → se suman
-  const porId = {};
+  // Duplicados de proyecto+categoría en el mismo mensaje → se suman
+  const porClave = {};
   for (const r of resueltos) {
-    porId[r.proyecto_id] = porId[r.proyecto_id] || { ...r, horas: 0 };
-    porId[r.proyecto_id].horas += r.horas;
+    const clave = `${r.proyecto_id}|${r.categoria || ''}`;
+    porClave[clave] = porClave[clave] || { ...r, horas: 0 };
+    porClave[clave].horas += r.horas;
   }
-  const finales = Object.values(porId);
+  const finales = Object.values(porClave);
 
   const fecha = fechaDestino(user.slack_id);
   const habia = db.setImputaciones(user.slack_id, fecha, finales);
 
   const total = Math.round(finales.reduce((s, p) => s + p.horas, 0) * 10) / 10;
   const trabajadas = db.horasDia(db.getDia(user.slack_id, fecha));
-  const detalle = finales.map(p => `${p.nombre} ${p.horas}hs`).join(' · ');
+  const detalle = finales.map(p => `${p.nombre} ${p.horas}hs${p.categoria ? ` _(${p.categoria})_` : ''}`).join(' · ');
   const comparacion = trabajadas != null ? ` de ${trabajadas}hs trabajadas` : '';
   const aviso = trabajadas != null && Math.abs(total - trabajadas) > 0.5
     ? `\n⚠️ Ojo: imputaste ${total}hs y trabajaste ${trabajadas}hs — si fue sin querer, mandame la corrección.` : '';
@@ -107,6 +122,7 @@ const vistaProyectos = (user) => {
   const catalogo = Object.keys(grupos).sort().map(cli => `*${cli}*: ${grupos[cli].join(', ')}`).join('\n');
   const lineas = [`🗂️ *Proyectos activos:*\n${catalogo}`];
   lineas.push('', `Para imputar tu día respondeme: \`${activos[0].nombre} 4, ${activos[1]?.nombre || 'Interno'} 2\``);
+  lineas.push(`_Podés agregar la categoría de trabajo: \`${activos[0].nombre} 4 redes\` (${CATEGORIAS.join(', ')})_`);
   if (hoy.length) {
     lineas.push('', `*Tu ${t.fmtDate(fecha)}:* ${hoy.map(i => `${i.nombre} ${i.horas}hs`).join(' · ')}`);
   }
@@ -131,7 +147,7 @@ const promptImputacion = async (client, user, fecha) => {
     const horas = db.horasDia(db.getDia(user.slack_id, fecha));
     await client.chat.postMessage({
       channel: user.slack_id,
-      text: `🗂️ *¿En qué trabajaste hoy${horas != null ? ` (${horas}hs)` : ''}?*\nRespondeme con proyecto y horas, por ejemplo: \`${activos[0].nombre} 4${activos[1] ? `, ${activos[1].nombre} 2` : ''}\`\n_Proyectos: ${activos.map(p => p.nombre).join(', ')}_`,
+      text: `🗂️ *¿En qué trabajaste hoy${horas != null ? ` (${horas}hs)` : ''}?*\nRespondeme con proyecto y horas (la categoría es opcional), por ejemplo: \`${activos[0].nombre} 4 redes${activos[1] ? `, ${activos[1].nombre} 2` : ''}\`\n_Proyectos: ${activos.map(p => p.nombre).join(', ')}_\n_Categorías: ${CATEGORIAS.join(', ')}_`,
     });
   } catch (e) {
     console.error('[proyectos] No pude mandar el prompt de imputación:', e.message);

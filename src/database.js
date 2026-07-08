@@ -36,6 +36,17 @@ if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='extras'
   console.log('[db] Flujo de horas extra eliminado — tablas extras/cierres recreadas');
 }
 
+// Migración: imputaciones gana la dimensión "categoría" (cambia el UNIQUE,
+// hay que recrear la tabla — el schema de abajo crea la versión nueva)
+let migrarImputaciones = false;
+if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='imputaciones'").get()) {
+  const colsImp = db.prepare('PRAGMA table_info(imputaciones)').all();
+  if (!colsImp.some(c => c.name === 'categoria')) {
+    db.exec('ALTER TABLE imputaciones RENAME TO imputaciones_old');
+    migrarImputaciones = true;
+  }
+}
+
 // ─── Schema ────────────────────────────────────────────────────────
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
@@ -150,8 +161,9 @@ db.exec(`
     fecha       TEXT NOT NULL,
     proyecto_id INTEGER NOT NULL,
     horas       REAL NOT NULL,
+    categoria   TEXT,               -- campaña | redes | website | branding | btl | otro
     created_at  TEXT DEFAULT (datetime('now')),
-    UNIQUE(user_id, fecha, proyecto_id),
+    UNIQUE(user_id, fecha, proyecto_id, categoria),
     FOREIGN KEY (proyecto_id) REFERENCES proyectos(id)
   );
 
@@ -163,6 +175,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_presencia ON presencia(user_id, fecha);
   CREATE INDEX IF NOT EXISTS idx_pings_fecha ON pings(fecha);
 `);
+
+// Completa la migración de imputaciones (la tabla nueva ya existe)
+if (migrarImputaciones) {
+  db.exec(`INSERT INTO imputaciones (id, user_id, fecha, proyecto_id, horas, created_at)
+           SELECT id, user_id, fecha, proyecto_id, horas, created_at FROM imputaciones_old`);
+  db.exec('DROP TABLE imputaciones_old');
+  console.log('[db] Imputaciones migradas — nueva dimensión: categoría de trabajo');
+}
 
 // Migración: columna equipo para agrupar reportes por área
 try { db.exec('ALTER TABLE users ADD COLUMN equipo TEXT'); } catch (_) { /* ya existe */ }
@@ -470,8 +490,8 @@ const setImputaciones = db.transaction((userId, fecha, pares) => {
   const habia = db.prepare('SELECT COUNT(*) c FROM imputaciones WHERE user_id = ? AND fecha = ?').get(userId, fecha).c > 0;
   db.prepare('DELETE FROM imputaciones WHERE user_id = ? AND fecha = ?').run(userId, fecha);
   for (const p of pares) {
-    db.prepare('INSERT INTO imputaciones (user_id, fecha, proyecto_id, horas) VALUES (?, ?, ?, ?)')
-      .run(userId, fecha, p.proyecto_id, p.horas);
+    db.prepare('INSERT INTO imputaciones (user_id, fecha, proyecto_id, horas, categoria) VALUES (?, ?, ?, ?, ?)')
+      .run(userId, fecha, p.proyecto_id, p.horas, p.categoria || null);
   }
   return habia;
 });
@@ -511,8 +531,13 @@ const horasUsuarioPorProyecto = (userId, from, to) => db.prepare(`
   WHERE i.user_id = ? AND i.fecha BETWEEN ? AND ? GROUP BY p.id ORDER BY horas DESC`).all(userId, from, to);
 
 /** Detalle diario para el Excel */
+/** Rollup por categoría de trabajo en un rango */
+const horasPorCategoria = (from, to) => db.prepare(`
+  SELECT COALESCE(categoria, 'sin categoría') as categoria, ROUND(SUM(horas), 1) as horas
+  FROM imputaciones WHERE fecha BETWEEN ? AND ? GROUP BY COALESCE(categoria, 'sin categoría') ORDER BY horas DESC`).all(from, to);
+
 const getImputacionesRange = (from, to) => db.prepare(`
-  SELECT i.fecha, u.nombre as persona, p.cliente, p.nombre as proyecto, i.horas
+  SELECT i.fecha, u.nombre as persona, p.cliente, p.nombre as proyecto, i.horas, i.categoria
   FROM imputaciones i
   JOIN proyectos p ON p.id = i.proyecto_id
   JOIN users u ON u.slack_id = i.user_id
@@ -571,7 +596,7 @@ module.exports = {
   logPresencia, presenciaSummary, presenciaPorDia, ultimaActividad,
   addPingModo, getPingModoActivo, getPingModosEnRango, createPing, respondPing, expirarPings, pingsHoyCount, pingSummary,
   crearProyecto, archivarProyecto, getProyectos, setImputaciones, getImputacionesDia, hayImputaciones,
-  horasPorProyecto, horasPorCliente, horasProyectoPersona, horasUsuarioPorProyecto, getImputacionesRange,
+  horasPorProyecto, horasPorCliente, horasPorCategoria, horasProyectoPersona, horasUsuarioPorProyecto, getImputacionesRange,
   logIntentoMobile, getIntentosMobile, avisoEnviado, marcarAviso,
   faltantes, resumenPersonas,
 };
