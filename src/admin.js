@@ -35,6 +35,7 @@ const USO = `⚙️ *Gestión de asistencia* — escribime \`admin ...\` acá en
 
 *Monitoreo*
 \`admin ping @user [días]\` — activa chequeos de actividad (la persona es notificada)
+\`admin recordar\` — recordatorio de entrada YA a los que no marcaron hoy
 \`admin novedades [FECHA]\` · \`admin actividad\` · \`admin presencia\`
 
 *Reportes*
@@ -279,6 +280,26 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
         case 'remoto': {
           const r = await novedadPersonal('remoto', { defaultMotivo: 'Fichaje remoto autorizado' });
           if (r) await say(`📱 *${r.nombre}* puede fichar desde el celular el ${r.fecha}. Queda diferenciado en los reportes.`);
+          break;
+        }
+
+        case 'recordar': {
+          // Empujón manual: recordatorio de entrada YA a los que no marcaron hoy
+          const fecha = t.today();
+          const soloIds = process.env.SOLO_MODE === 'true'
+            ? (process.env.SOLO_USER_ID || '').split(',').map(s => s.trim()).filter(Boolean)
+            : null;
+          const avisados = [];
+          for (const u of db.getTracked()) {
+            if (soloIds && !soloIds.includes(u.slack_id)) continue;
+            if (db.isExento(u.slack_id, fecha)) continue;
+            if (db.getDia(u.slack_id, fecha).entrada) continue;
+            await client.chat.postMessage({ channel: u.slack_id, text: txt.recordatorios.entrada(u.hora_entrada) });
+            avisados.push(u.nombre);
+          }
+          await say(avisados.length
+            ? `🔔 Recordatorio de entrada mandado a *${avisados.length}*: ${avisados.join(', ')}.`
+            : '🔔 Nadie para recordar: o ya marcaron todos, o no hay gente trackeada (chequeá `/dashboard/usuarios` o agregalos con `admin agregar @persona`).');
           break;
         }
 
