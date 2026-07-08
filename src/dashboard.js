@@ -19,6 +19,7 @@ const dashboardAuth = (req, res, next) => {
 const setupDashboard = (receiver) => {
   const router = express.Router();
   router.use(dashboardAuth);
+  router.use(express.urlencoded({ extended: true }));
 
   // ─── Hoy ──────────────────────────────────────────────────────────
   router.get('/', (_req, res) => {
@@ -50,7 +51,25 @@ const setupDashboard = (receiver) => {
       detalle: db.horasProyectoPersona(from, to),
       categorias: db.horasPorCategoria(from, to),
       activos: db.getProyectos(true),
+      todos: db.getProyectos(false),
     }));
+  });
+
+  // Alta de proyecto desde el dashboard (mismo basic auth)
+  router.post('/proyectos/nuevo', (req, res) => {
+    const nombre = (req.body.nombre || '').trim();
+    const cliente = (req.body.cliente || '').trim() || null;
+    if (nombre) {
+      db.crearProyecto(nombre, cliente);
+      console.log(`[dashboard] Proyecto creado/actualizado: ${cliente ? cliente + ' / ' : ''}${nombre}`);
+    }
+    res.redirect('/dashboard/proyectos');
+  });
+
+  router.post('/proyectos/archivar', (req, res) => {
+    const id = parseInt(req.body.id, 10);
+    if (id) db.archivarProyecto(id);
+    res.redirect('/dashboard/proyectos');
   });
 
   // ─── Actividad ────────────────────────────────────────────────────
@@ -137,8 +156,27 @@ const renderRegistros = ({ dias, users, from, to, selected }) => {
     </tr></thead><tbody>${dias.map(d => filaDia(d, true)).join('')}</tbody></table>` : '<p class="empty">No hay registros</p>'}</div>`);
 };
 
-const renderProyectos = ({ from, to, clientes, proyectos, detalle, categorias, activos }) => {
+const renderProyectos = ({ from, to, clientes, proyectos, detalle, categorias, activos, todos }) => {
   const totalImputado = Math.round(clientes.reduce((s, c) => s + c.horas, 0) * 10) / 10;
+
+  // Catálogo completo (con o sin horas) + alta + archivar
+  const catalogoRows = todos.map(p => `
+    <tr>
+      <td style="color:var(--text-muted)">${p.cliente || '—'}</td>
+      <td><strong>${p.nombre}</strong></td>
+      <td>${p.activo ? '<span class="badge tracked">Activo</span>' : '<span class="badge missing">Archivado</span>'}</td>
+      <td>${p.activo ? `<form method="POST" action="/dashboard/proyectos/archivar" style="display:inline" onsubmit="return confirm('¿Archivar ${p.nombre}? Las horas imputadas se conservan.')">
+        <input type="hidden" name="id" value="${p.id}">
+        <button type="submit" style="background:none;border:1px solid var(--border);color:var(--text-muted);padding:0.2rem 0.6rem;border-radius:4px;cursor:pointer;font-family:inherit;font-size:0.75rem">Archivar</button>
+      </form>` : '<span style="font-size:0.75rem;color:var(--text-muted)">Reactivar: crearlo de nuevo con el mismo nombre</span>'}</td>
+    </tr>`).join('');
+
+  const formAlta = `
+    <form method="POST" action="/dashboard/proyectos/nuevo" class="filters" style="margin-bottom:1rem">
+      <div><label>Cliente (opcional)</label><input type="text" name="cliente" placeholder="Cencosud"></div>
+      <div><label>Proyecto</label><input type="text" name="nombre" placeholder="Jumbo" required></div>
+      <button type="submit">➕ Agregar</button>
+    </form>`;
 
   const clienteRows = clientes.map(c => {
     const pct = totalImputado ? Math.round((c.horas / totalImputado) * 100) : 0;
@@ -174,9 +212,13 @@ const renderProyectos = ({ from, to, clientes, proyectos, detalle, categorias, a
     <div class="card" style="margin-bottom:1.5rem"><h3>🗂️ Por proyecto</h3>
       ${proyectos.length ? `<table><thead><tr><th>Cliente</th><th>Proyecto</th><th>Horas</th><th>Quiénes</th></tr></thead><tbody>${proyectoRows}</tbody></table>` : '<p class="empty">Sin horas imputadas en el período</p>'}
     </div>
-    ${conCategoria.length ? `<div class="card"><h3>🏷️ Por categoría de trabajo</h3>
+    ${conCategoria.length ? `<div class="card" style="margin-bottom:1.5rem"><h3>🏷️ Por categoría de trabajo</h3>
       <table><thead><tr><th>Categoría</th><th>Horas</th></tr></thead><tbody>${catRows}</tbody></table>
-    </div>` : ''}`);
+    </div>` : ''}
+    <div class="card"><h3>📚 Catálogo (${activos.length} activos)</h3>
+      ${formAlta}
+      ${todos.length ? `<table><thead><tr><th>Cliente</th><th>Proyecto</th><th>Estado</th><th></th></tr></thead><tbody>${catalogoRows}</tbody></table>` : '<p class="empty">Sin proyectos — cargá el primero acá arriba o por DM con <code>admin proyecto agregar Cliente / Proyecto</code></p>'}
+    </div>`);
 };
 
 const renderActividad = ({ presencia, pings, huboPings, from, to }) => {
