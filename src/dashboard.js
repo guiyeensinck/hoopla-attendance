@@ -39,6 +39,20 @@ const setupDashboard = (receiver) => {
     res.send(renderRegistros({ dias, users: db.getAllUsers(), from, to, selected: user }));
   });
 
+  // ─── Proyectos ────────────────────────────────────────────────────
+  router.get('/proyectos', (req, res) => {
+    const from = req.query.from || t.monthStart();
+    const to = req.query.to || t.today();
+    res.send(renderProyectos({
+      from, to,
+      clientes: db.horasPorCliente(from, to),
+      proyectos: db.horasPorProyecto(from, to),
+      detalle: db.horasProyectoPersona(from, to),
+      categorias: db.horasPorCategoria(from, to),
+      activos: db.getProyectos(true),
+    }));
+  });
+
   // ─── Actividad ────────────────────────────────────────────────────
   router.get('/actividad', (req, res) => {
     const from = req.query.from || t.weekStart();
@@ -121,6 +135,48 @@ const renderRegistros = ({ dias, users, from, to, selected }) => {
     <div class="card">${dias.length ? `<table><thead><tr>
       <th>Fecha</th><th>Persona</th><th>Entrada</th><th>Almuerzo</th><th>Salida</th><th>Horas</th><th>Flags</th><th>Estado</th>
     </tr></thead><tbody>${dias.map(d => filaDia(d, true)).join('')}</tbody></table>` : '<p class="empty">No hay registros</p>'}</div>`);
+};
+
+const renderProyectos = ({ from, to, clientes, proyectos, detalle, categorias, activos }) => {
+  const totalImputado = Math.round(clientes.reduce((s, c) => s + c.horas, 0) * 10) / 10;
+
+  const clienteRows = clientes.map(c => {
+    const pct = totalImputado ? Math.round((c.horas / totalImputado) * 100) : 0;
+    return `<tr><td><strong>${c.cliente}</strong></td><td>${c.horas}hs</td>
+      <td>${pct}% <div class="progress"><div class="progress-bar green" style="width:${pct}%"></div></div></td>
+      <td>${c.proyectos}</td><td>${c.personas}</td></tr>`;
+  }).join('');
+
+  const proyectoRows = proyectos.map(p => {
+    const personas = detalle.filter(d => d.proyecto === p.nombre).map(d => `${d.persona} ${d.horas}hs`).join(' · ');
+    return `<tr><td style="color:var(--text-muted)">${p.cliente || '—'}</td><td><strong>${p.nombre}</strong></td>
+      <td>${p.horas}hs</td><td style="font-size:0.8rem;color:var(--text-muted)">${personas}</td></tr>`;
+  }).join('');
+
+  const conCategoria = categorias.filter(c => c.categoria !== 'sin categoría');
+  const catRows = categorias.map(c => `<tr><td>${c.categoria}</td><td>${c.horas}hs</td></tr>`).join('');
+
+  return layout('Proyectos', 'proyectos', `
+    <form class="filters" method="GET" action="/dashboard/proyectos">
+      <div><label>Desde</label><input type="date" name="from" value="${from}"></div>
+      <div><label>Hasta</label><input type="date" name="to" value="${to}"></div>
+      <button type="submit">Filtrar</button>
+    </form>
+    <div class="grid">
+      <div class="card"><h3>Horas imputadas</h3><div class="value">${totalImputado}</div></div>
+      <div class="card"><h3>Clientes con horas</h3><div class="value green">${clientes.length}</div></div>
+      <div class="card"><h3>Proyectos con horas</h3><div class="value">${proyectos.length}</div></div>
+      <div class="card"><h3>Proyectos activos</h3><div class="value" style="color:var(--accent-light)">${activos.length}</div></div>
+    </div>
+    <div class="card" style="margin-bottom:1.5rem"><h3>🏢 Por cliente</h3>
+      ${clientes.length ? `<table><thead><tr><th>Cliente</th><th>Horas</th><th>% del total</th><th>Proyectos</th><th>Personas</th></tr></thead><tbody>${clienteRows}</tbody></table>` : '<p class="empty">Sin horas imputadas en el período</p>'}
+    </div>
+    <div class="card" style="margin-bottom:1.5rem"><h3>🗂️ Por proyecto</h3>
+      ${proyectos.length ? `<table><thead><tr><th>Cliente</th><th>Proyecto</th><th>Horas</th><th>Quiénes</th></tr></thead><tbody>${proyectoRows}</tbody></table>` : '<p class="empty">Sin horas imputadas en el período</p>'}
+    </div>
+    ${conCategoria.length ? `<div class="card"><h3>🏷️ Por categoría de trabajo</h3>
+      <table><thead><tr><th>Categoría</th><th>Horas</th></tr></thead><tbody>${catRows}</tbody></table>
+    </div>` : ''}`);
 };
 
 const renderActividad = ({ presencia, pings, huboPings, from, to }) => {

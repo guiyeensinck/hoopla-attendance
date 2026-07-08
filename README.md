@@ -108,6 +108,7 @@ Nike 4, Quilmes 2.5, Interno 1
 ### Dashboard web (`/dashboard`)
 - **Hoy**: presentes, faltantes, jornada completa, horas del equipo.
 - **Registros**: histórico filtrable por fecha y persona.
+- **Proyectos**: horas por cliente (con % del total), por proyecto (con quiénes) y por categoría de trabajo, filtrable por fecha.
 - **Actividad**: % de presencia Slack por persona; pings solo si hubo modo dirigido.
 - **Usuarios**: roster con horario asignado y badges admin/trackeado.
 

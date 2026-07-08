@@ -69,6 +69,7 @@ const layout = (title, nav, body) => `
     <nav>
       <a href="/dashboard" class="${nav === 'hoy' ? 'active' : ''}">Hoy</a>
       <a href="/dashboard/registros" class="${nav === 'registros' ? 'active' : ''}">Registros</a>
+      <a href="/dashboard/proyectos" class="${nav === 'proyectos' ? 'active' : ''}">Proyectos</a>
       <a href="/dashboard/actividad" class="${nav === 'actividad' ? 'active' : ''}">Actividad</a>
       <a href="/dashboard/usuarios" class="${nav === 'usuarios' ? 'active' : ''}">Usuarios</a>
     </nav>
