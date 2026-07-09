@@ -247,6 +247,7 @@ const renderUsuarios = ({ users }) => {
     const b = [];
     if (u.es_admin) b.push('<span class="badge admin">Admin</span>');
     if (u.trackeado) b.push('<span class="badge tracked">Trackeado</span>');
+    if (u.modo === 'solo_proyectos') b.push('<span class="badge partial">Solo proyectos</span>');
     return `<tr><td>${u.nombre}</td><td style="font-size:0.75rem;color:var(--text-muted)">${u.slack_id}</td>
       <td>${u.equipo || '—'}</td>
       <td>${u.hora_entrada}–${u.hora_salida}</td><td>${u.carga_horaria}hs</td><td>${b.join(' ') || '—'}</td></tr>`;

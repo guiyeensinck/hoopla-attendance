@@ -68,6 +68,9 @@ Los recordatorios a la persona se repiten **cada 10 minutos** hasta que marca (u
 - **Banco de horas**: saldo mensual acumulado por persona (trabajadas − esperadas del 1° a hoy). Cada persona ve el suyo en `horarios`; el admin lo ve en la ficha y en los patrones.
 - **Equipos** (`admin equipo @user Nombre`): los reportes semanal/mensual y el resumen ejecutivo agrupan y totalizan por equipo; el dashboard muestra el equipo en el roster.
 
+### Modo "solo proyectos"
+`admin soloproyectos @user` exime a una persona de toda la asistencia (sin marcaciones, recordatorios, presencia ni patrones — tampoco cuenta en faltantes ni reportes de horas) pero **sí carga horas de proyectos**: el bot le pregunta cada día a su horario de salida y puede imputar cuando quiera. Ideal para freelancers o socios. Se revierte con `admin completo @user`. El dashboard la muestra con badge "Solo proyectos".
+
 ### Qué se le puede escribir al bot (todo por DM)
 
 **Para todos:**
@@ -83,6 +86,7 @@ Los recordatorios a la persona se repiten **cada 10 minutos** hasta que marca (u
 - `admin horario @user HH:MM HH:MM Nhs`
 - `admin persona @user` — ficha completa de una persona
 - `admin equipo @user Nombre` (o `-` para sacarlo) · `admin equipos`
+- `admin soloproyectos @user` / `admin completo @user` — modo sin asistencia, solo horas de proyectos
 - `admin proyecto agregar Cliente / Proyecto` (acepta varias líneas de una) · `admin proyecto sacar Nombre` · `admin proyectos`
 - `admin reporte proyectos [semana|mes]`
 - `admin feriado FECHA Motivo` (aplica a todos)

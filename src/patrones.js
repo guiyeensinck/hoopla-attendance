@@ -31,6 +31,7 @@ const detectarPatrones = (soloUsers = null) => {
 
   for (const user of db.getTracked()) {
     if (soloUsers && !soloUsers.includes(user.slack_id)) continue;
+    if (db.esSoloProyectos(user)) continue; // sin patrones de asistencia
     const uid = user.slack_id;
     const dias = db.getDias(desde, hoy, uid);
 

@@ -21,6 +21,7 @@ const USO = `⚙️ *Gestión de asistencia* — escribime \`admin ...\` acá en
 \`admin horario @user HH:MM HH:MM Nhs\` — ej: \`admin horario @ana 09:00 18:00 8hs\`
 \`admin persona @user\` — ficha completa (horas, tardes, presencia, saldo)
 \`admin equipo @user Nombre\` — asignar equipo (\`-\` para sacarlo) · \`admin equipos\` — ver equipos
+\`admin soloproyectos @user\` — sin asistencia, solo carga horas de proyectos · \`admin completo @user\` — vuelve al modo normal
 
 *Proyectos (time tracking)*
 \`admin proyecto agregar Cliente / Proyecto\` — sin \`/\` queda sin cliente (ej. Interno)
@@ -154,6 +155,23 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
           await say(equipo === '-'
             ? `✅ *${db.getUser(uid)?.nombre || uid}* quedó sin equipo.`
             : `✅ *${db.getUser(uid)?.nombre || uid}* → equipo *${equipo}*.`);
+          break;
+        }
+        case 'soloproyectos': {
+          const uid = extractMention(parts[1] || '');
+          if (!uid) { await say(txt.errores.faltaMencion); return; }
+          const u = await agregarAlTracking(client, uid); // asegura tracking + onboarding si es nuevo
+          db.setModo(uid, 'solo_proyectos');
+          await client.chat.postMessage({ channel: uid, text: txt.chat.modoSoloProyectos(u.hora_salida) });
+          await say(`✅ *${u.nombre}* pasó a *solo proyectos*: sin marcaciones, recordatorios ni presencia — solo carga de horas (le avisé por DM). Volver al modo normal: \`admin completo @user\`.`);
+          break;
+        }
+        case 'completo': {
+          const uid = extractMention(parts[1] || '');
+          if (!uid) { await say(txt.errores.faltaMencion); return; }
+          await ensureUser(client, uid);
+          db.setModo(uid, 'completo');
+          await say(`✅ *${db.getUser(uid)?.nombre || uid}* volvió al modo completo (asistencia + proyectos).`);
           break;
         }
         case 'equipos': {
@@ -292,6 +310,7 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
           const avisados = [];
           for (const u of db.getTracked()) {
             if (soloIds && !soloIds.includes(u.slack_id)) continue;
+            if (db.esSoloProyectos(u)) continue;
             if (db.isExento(u.slack_id, fecha)) continue;
             if (db.getDia(u.slack_id, fecha).entrada) continue;
             await client.chat.postMessage({ channel: u.slack_id, text: txt.recordatorios.entrada(u.hora_entrada) });

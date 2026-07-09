@@ -16,6 +16,7 @@ const runPresenceCheck = async (app, soloUsers = null) => {
 
   for (const user of db.getTracked()) {
     if (soloUsers && !soloUsers.includes(user.slack_id)) continue;
+    if (db.esSoloProyectos(user)) continue; // sin monitoreo de presencia
     if (db.isExento(user.slack_id, fecha)) continue;
     // Solo dentro del horario laboral de cada persona
     if (nowM < t.toMin(user.hora_entrada) || nowM >= t.toMin(user.hora_salida)) continue;
@@ -62,6 +63,7 @@ const runPingCycle = async (app, soloUsers = null) => {
 
   for (const user of db.getTracked()) {
     if (soloUsers && !soloUsers.includes(user.slack_id)) continue;
+    if (db.esSoloProyectos(user)) continue;
     if (!db.getPingModoActivo(user.slack_id, fecha)) continue;
     if (db.isExento(user.slack_id, fecha)) continue;
 

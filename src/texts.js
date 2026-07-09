@@ -31,6 +31,7 @@ module.exports = {
     btnSemana: '📊 Mi semana',
     menuHint: '_También podés escribirme directo: *marcar* (te mando el link), *horarios* (tu semana) o *proyectos* (imputar tu día)._',
     adminHint: '_Sos admin: escribí *admin* para ver los comandos de gestión._',
+    modoSoloProyectos: (hora) => `ℹ️ *Te configuraron en modo "solo proyectos".*\nNo tenés que marcar entrada/salida ni te van a llegar recordatorios de asistencia. Lo único: cada día alrededor de las ${hora} te voy a preguntar en qué proyectos trabajaste — respondeme tipo \`Jumbo 4, Interno 2\`. También podés mandarme la imputación cuando quieras, sin esperar la pregunta.`,
   },
 
   // ─── Marcación ────────────────────────────────────────────────────

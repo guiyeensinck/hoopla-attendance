@@ -95,6 +95,15 @@ const setupScheduler = (app) => {
       const dia = db.getDia(uid, fecha);
 
       try {
+        // Modo solo_proyectos: sin asistencia — solo el prompt de imputación
+        // a su horario de salida (si aún no cargó horas)
+        if (db.esSoloProyectos(user)) {
+          if (nowM >= salidaM && nowM <= salidaM + 60) {
+            await promptImputacion(app.client, user, fecha);
+          }
+          continue;
+        }
+
         // 1. Entrada: cada 10 min desde su horario hasta que marque (tope 90')
         if (!dia.entrada && nowM >= entradaM + CFG.INTERVALO && nowM <= entradaM + CFG.TOPE_ENTRADA) {
           const slot = Math.floor((nowM - entradaM) / CFG.INTERVALO);

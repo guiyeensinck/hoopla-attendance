@@ -188,6 +188,8 @@ if (migrarImputaciones) {
 try { db.exec('ALTER TABLE users ADD COLUMN equipo TEXT'); } catch (_) { /* ya existe */ }
 // Migración: cliente del proyecto (rollup de horas por cliente)
 try { db.exec('ALTER TABLE proyectos ADD COLUMN cliente TEXT'); } catch (_) { /* ya existe */ }
+// Migración: modo de tracking — completo | solo_proyectos (sin asistencia)
+try { db.exec("ALTER TABLE users ADD COLUMN modo TEXT DEFAULT 'completo'"); } catch (_) { /* ya existe */ }
 
 const TIPOS_ORDEN = ['entrada', 'almuerzo_inicio', 'almuerzo_fin', 'salida'];
 const NOVEDADES_EXENTAS = ['feriado', 'vacaciones', 'medico', 'ausente', 'libre'];
@@ -208,6 +210,8 @@ const setHorario = (id, entrada, salida, carga) =>
   db.prepare('UPDATE users SET hora_entrada = ?, hora_salida = ?, carga_horaria = ? WHERE slack_id = ?')
     .run(entrada, salida, carga, id);
 const setEquipo = (id, equipo) => db.prepare('UPDATE users SET equipo = ? WHERE slack_id = ?').run(equipo, id);
+const setModo = (id, modo) => db.prepare('UPDATE users SET modo = ? WHERE slack_id = ?').run(modo, id);
+const esSoloProyectos = (u) => u?.modo === 'solo_proyectos';
 
 const superAdmins = () => (process.env.ADMIN_USER_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
 const isSuperAdmin = (id) => superAdmins().includes(id);
@@ -567,17 +571,19 @@ const marcarAviso = (userId, fecha, tipo) =>
 // REPORTES
 // ═══════════════════════════════════════════════════════════════════
 
-/** Tracked sin entrada hoy y sin novedad que lo justifique */
+/** Tracked sin entrada hoy y sin novedad que lo justifique (excluye modo solo_proyectos) */
 const faltantes = (fecha) => db.prepare(`
   SELECT u.* FROM users u WHERE u.trackeado = 1
+    AND COALESCE(u.modo, 'completo') != 'solo_proyectos'
     AND u.slack_id NOT IN (SELECT user_id FROM registros WHERE fecha = ? AND tipo = 'entrada')
     AND u.slack_id NOT IN (SELECT user_id FROM novedades WHERE fecha = ? AND user_id IS NOT NULL
                            AND tipo IN (${NOVEDADES_EXENTAS.map(() => '?').join(',')}))
   ORDER BY u.nombre`).all(fecha, fecha, ...NOVEDADES_EXENTAS);
 
-/** Resumen agregado por persona para un rango (reporte semanal/mensual) */
+/** Resumen agregado por persona para un rango (reporte semanal/mensual).
+ *  Excluye modo solo_proyectos: no tienen horas esperadas de asistencia. */
 const resumenPersonas = (from, to) => {
-  const users = getTracked();
+  const users = getTracked().filter(u => !esSoloProyectos(u));
   const dias = getDias(from, to);
   return users.map(u => {
     const propios = dias.filter(d => d.user_id === u.slack_id);
@@ -591,7 +597,7 @@ const resumenPersonas = (from, to) => {
 
 module.exports = {
   db, TIPOS_ORDEN, NOVEDADES_EXENTAS,
-  upsertUser, getUser, getAllUsers, getTracked, setTracked, setAdmin, setHorario, setEquipo, isAdmin, isSuperAdmin,
+  upsertUser, getUser, getAllUsers, getTracked, setTracked, setAdmin, setHorario, setEquipo, setModo, esSoloProyectos, isAdmin, isSuperAdmin,
   getDia, nextTipo, horasDia, registrar, imputarAlmuerzo, corregirSalida, getDias,
   addNovedad, getNovedadesFecha, getNovedadesRange, isFeriado, getFeriados, hasNovedad, isExento, diasEsperados,
   createToken, peekToken, consumeToken,

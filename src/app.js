@@ -133,6 +133,10 @@ const resumenBlocks = (user) => {
 
 /** Cualquier otro mensaje → menú con botones (y hints de texto) */
 const enviarMenu = async (user, say) => {
+  if (db.esSoloProyectos(user)) {
+    await say(`${txt.chat.menuSaludo(user.nombre)}\nEstás en modo *solo proyectos*: mandame tus horas del día (ej: \`Jumbo 4, Interno 2\`) o escribí *proyectos* para ver el catálogo y lo que llevás imputado.`);
+    return;
+  }
   const dia = db.getDia(user.slack_id, t.today());
   const next = db.nextTipo(dia);
   const corregible = !next && dia.salida?.auto_closed === 1 && !dia.salida.corregido;
@@ -175,6 +179,12 @@ app.message(async ({ message, say, client }) => {
     const user = db.getUser(uid);
     if (!user?.trackeado) {
       await say(db.isAdmin(uid) ? txt.marcar.noTrackeadoAdmin : txt.marcar.noTrackeado);
+      return;
+    }
+
+    // Modo solo proyectos: no marca asistencia, solo imputa horas
+    if (db.esSoloProyectos(user) && (r.tipo === 'marcar' || r.tipo === 'horarios')) {
+      await say(`ℹ️ Estás en modo *solo proyectos* — no hace falta que marques asistencia. Mandame tus horas cuando quieras (ej: \`Jumbo 4, Interno 2\`) o escribí *proyectos* para ver el catálogo.`);
       return;
     }
 
