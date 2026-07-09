@@ -12,8 +12,9 @@ const { normalize } = require('./dmrouter');
  */
 
 // Categorías de trabajo (opcionales al imputar): "Jumbo 3 redes"
-const CATEGORIAS = ['campaña', 'redes', 'website', 'branding', 'btl', 'otro'];
-const CATEGORIA_ALIAS = { campana: 'campaña', web: 'website', pagina: 'website' };
+// "ajustes" = retrabajo (idas y vueltas, correcciones) — mide el derroche
+const CATEGORIAS = ['campaña', 'redes', 'website', 'branding', 'btl', 'ajustes', 'otro'];
+const CATEGORIA_ALIAS = { campana: 'campaña', web: 'website', pagina: 'website', ajuste: 'ajustes', correcciones: 'ajustes', correccion: 'ajustes', rework: 'ajustes' };
 
 const normalizarCategoria = (token) => {
   if (!token) return null;

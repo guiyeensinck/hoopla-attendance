@@ -74,7 +74,7 @@ Los recordatorios a la persona se repiten **cada 10 minutos** hasta que marca (u
 - `marcar` (también `entrada`, `salida`, `almuerzo`, `fichar`) — link para registrar la próxima marcación
 - `horarios` (también `estado`, `semana`, `balance`) — estado de hoy + balance semanal propio
 - `proyectos` — proyectos activos + lo imputado hoy y esta semana
-- `Nike 4 redes, Interno 2` — imputa el día a proyectos (pares nombre + horas; la categoría de trabajo es opcional: campaña, redes, website, branding, btl, otro)
+- `Nike 4 redes, Interno 2` — imputa el día a proyectos (pares nombre + horas; la categoría de trabajo es opcional: campaña, redes, website, branding, btl, ajustes, otro)
 - Cualquier otra cosa → menú con botones **Marcar** y **Mi semana**
 
 **Admin (`admin ...`, siempre con @mención, nunca nombre tipeado):**
