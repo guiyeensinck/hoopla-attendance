@@ -37,7 +37,55 @@ const setupDashboard = (receiver) => {
     const to = req.query.to || t.today();
     const user = req.query.user || '';
     const dias = db.getDias(from, to, user || null);
-    res.send(renderRegistros({ dias, users: db.getAllUsers(), from, to, selected: user }));
+    // Con persona seleccionada: evaluación semana / mes / acumulado
+    let evaluacion = null;
+    const u = user ? db.getUser(user) : null;
+    if (u?.trackeado && !db.esSoloProyectos(u)) {
+      const primero = db.getDias('2000-01-01', t.today(), user)[0];
+      evaluacion = {
+        nombre: u.nombre,
+        semana: db.evaluacionUsuario(u, t.weekStart(), t.today()),
+        mes: db.evaluacionUsuario(u, t.monthStart(), t.today()),
+        total: primero ? db.evaluacionUsuario(u, primero.fecha, t.today()) : null,
+      };
+    }
+    res.send(renderRegistros({ dias, users: db.getAllUsers(), from, to, selected: user, evaluacion }));
+  });
+
+  // ─── Ausencias y vacaciones ───────────────────────────────────────
+  router.get('/ausencias', (req, res) => {
+    res.send(renderAusencias({
+      users: db.getTracked(),
+      novedades: db.novedadesRangosAdmin(t.monthStart()),
+      vacaciones: db.vacacionesResumen(),
+      msg: req.query.msg || null,
+    }));
+  });
+
+  router.post('/ausencias/nueva', (req, res) => {
+    const { user_id, tipo, desde, motivo } = req.body;
+    const dias = Math.max(1, parseInt(req.body.dias, 10) || 1);
+    const TIPOS_OK = ['vacaciones', 'ausente', 'medico', 'libre', 'salida', 'remoto'];
+    if (!user_id || !TIPOS_OK.includes(tipo) || !t.isValidDate(desde) || dias > 60) {
+      res.redirect('/dashboard/ausencias?msg=datos'); return;
+    }
+    const justificada = tipo === 'ausente' ? (req.body.justificada === 'no' ? 0 : 1) : null;
+    db.cargarNovedadRango(user_id, tipo, desde, dias, { motivo: (motivo || '').trim() || null, creadoPor: 'dashboard', justificada });
+    console.log(`[dashboard] Novedad ${tipo} x${dias} desde ${desde} para ${user_id}`);
+    const avisoLunes = tipo === 'vacaciones' && t.dayjs(desde).day() !== 1;
+    res.redirect(`/dashboard/ausencias?msg=${avisoLunes ? 'nolunes' : 'ok'}`);
+  });
+
+  router.post('/ausencias/borrar', (req, res) => {
+    const ids = String(req.body.ids || '').split(',').map(n => parseInt(n, 10)).filter(Boolean);
+    for (const id of ids) db.borrarNovedad(id);
+    res.redirect('/dashboard/ausencias?msg=borrado');
+  });
+
+  router.post('/ausencias/vacaciones-config', (req, res) => {
+    const dias = parseFloat(req.body.dias);
+    if (req.body.user_id && dias >= 0 && dias <= 60) db.setVacacionesAnuales(req.body.user_id, dias);
+    res.redirect('/dashboard/ausencias?msg=config');
   });
 
   // ─── Proyectos ────────────────────────────────────────────────────
@@ -158,8 +206,37 @@ const renderHoy = ({ hoy, dias, tracked, falt, novedades }) => {
   `);
 };
 
-const renderRegistros = ({ dias, users, from, to, selected }) => {
+// Tarjeta de evaluación de un período (día OK = puntual, salida en horario,
+// almuerzo ≤ 1h; con 10' de tolerancia en cada punta)
+const cardEvaluacion = (titulo, e) => {
+  if (!e || e.esperados === 0) return `<div class="card"><h3>${titulo}</h3><p style="color:var(--text-muted);font-size:0.85rem;margin-top:0.5rem">Sin días cerrados en el período</p></div>`;
+  const problemas = [
+    e.tardes ? `${e.tardes} tarde${e.tardes > 1 ? 's' : ''}` : null,
+    e.anticipadas ? `${e.anticipadas} salida${e.anticipadas > 1 ? 's' : ''} anticipada${e.anticipadas > 1 ? 's' : ''}` : null,
+    e.almuerzosLargos ? `${e.almuerzosLargos} almuerzo${e.almuerzosLargos > 1 ? 's' : ''} >1h` : null,
+    e.autoCierres ? `${e.autoCierres} auto-cierre${e.autoCierres > 1 ? 's' : ''}` : null,
+    e.sinAviso ? `${e.sinAviso} sin registro ni aviso` : null,
+    e.ausInjust ? `${e.ausInjust} ausencia${e.ausInjust > 1 ? 's' : ''} injustificada${e.ausInjust > 1 ? 's' : ''}` : null,
+  ].filter(Boolean);
+  const c = e.pct >= 85 ? 'green' : e.pct >= 65 ? 'yellow' : 'red';
+  return `
+    <div class="card"><h3>${titulo}</h3>
+      <div class="value ${c}">${e.semaforo} ${e.pct}%</div>
+      <p style="font-size:0.8rem;color:var(--text-muted);margin-top:0.25rem">${e.ok} de ${e.esperados} días OK · ${e.horas}hs / ${e.horasEsperadas}hs</p>
+      <p style="font-size:0.75rem;margin-top:0.5rem;color:${problemas.length ? 'var(--yellow)' : 'var(--green)'}">${problemas.length ? problemas.join(' · ') : 'Sin observaciones 💪'}</p>
+      ${e.ausJust ? `<p style="font-size:0.7rem;color:var(--text-muted);margin-top:0.25rem">${e.ausJust} ausencia${e.ausJust > 1 ? 's' : ''} justificada${e.ausJust > 1 ? 's' : ''} (no penaliza)</p>` : ''}
+    </div>`;
+};
+
+const renderRegistros = ({ dias, users, from, to, selected, evaluacion }) => {
   const opts = users.map(u => `<option value="${u.slack_id}" ${selected === u.slack_id ? 'selected' : ''}>${u.nombre}</option>`).join('');
+  const panelEval = evaluacion ? `
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
+      ${cardEvaluacion('📅 Esta semana', evaluacion.semana)}
+      ${cardEvaluacion('🗓️ Este mes', evaluacion.mes)}
+      ${cardEvaluacion('📚 Acumulado', evaluacion.total)}
+    </div>
+    <p style="font-size:0.7rem;color:var(--text-muted);margin:-1rem 0 1.5rem">Día OK = entrada puntual, salida en horario y almuerzo de hasta 1 hora (tolerancia 10' en cada punta). Se evalúan solo días hábiles ya cerrados; las ausencias justificadas y vacaciones no penalizan.</p>` : '';
   return layout('Registros', 'registros', `
     <form class="filters" method="GET" action="/dashboard/registros">
       <div><label>Desde</label><input type="date" name="from" value="${from}"></div>
@@ -167,6 +244,7 @@ const renderRegistros = ({ dias, users, from, to, selected }) => {
       <div><label>Persona</label><select name="user"><option value="">Todas</option>${opts}</select></div>
       <button type="submit">Filtrar</button>
     </form>
+    ${panelEval}
     <div class="card">${dias.length ? `<table><thead><tr>
       <th>Fecha</th><th>Persona</th><th>Entrada</th><th>Almuerzo</th><th>Salida</th><th>Horas</th><th>Flags</th><th>Estado</th>
     </tr></thead><tbody>${dias.map(d => filaDia(d, true)).join('')}</tbody></table>` : '<p class="empty">No hay registros</p>'}</div>`);
@@ -291,6 +369,89 @@ const renderUsuarios = ({ users }) => {
     <div class="card"><h3>Roster</h3>
       <p style="font-size:0.8rem;color:var(--text-muted);margin-bottom:1rem">Gestión por DM al bot: <code>admin agregar @usuario</code> · <code>admin horario @usuario HH:MM HH:MM Nhs</code></p>
       ${users.length ? `<table><thead><tr><th>Nombre</th><th>Slack ID</th><th>Equipo</th><th>Horario</th><th>Carga</th><th>Badges</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="empty">Sin usuarios</p>'}
+    </div>`);
+};
+
+// ─── Ausencias y vacaciones ─────────────────────────────────────────
+
+const renderAusencias = ({ users, novedades, vacaciones, msg }) => {
+  const btnMini = 'background:none;border:1px solid var(--border);color:var(--text-muted);padding:0.2rem 0.6rem;border-radius:4px;cursor:pointer;font-family:inherit;font-size:0.75rem';
+  const inpMini = 'background:var(--surface-2);border:1px solid var(--border);color:var(--text);padding:0.35rem 0.5rem;border-radius:4px;font-family:inherit;font-size:0.8rem';
+
+  const banners = {
+    ok: ['var(--green)', '✅ Novedad cargada.'],
+    nolunes: ['var(--yellow)', '✅ Vacaciones cargadas — ⚠️ ojo: no arrancan un lunes (la política es arrancar los lunes).'],
+    borrado: ['var(--green)', '🗑️ Novedad borrada.'],
+    config: ['var(--green)', '✅ Días anuales actualizados.'],
+    datos: ['var(--red)', '⚠️ Revisá los datos del formulario (máx. 60 días).'],
+  };
+  const banner = banners[msg] ? `<p style="color:${banners[msg][0]};font-size:0.85rem;margin-bottom:1rem">${banners[msg][1]}</p>` : '';
+
+  const optsUsers = users.map(u => `<option value="${u.slack_id}">${u.nombre}</option>`).join('');
+
+  const formAlta = `
+    <form method="POST" action="/dashboard/ausencias/nueva" class="filters" style="margin-bottom:0.5rem">
+      <div><label>Persona</label><select name="user_id" required><option value="">—</option>${optsUsers}</select></div>
+      <div><label>Tipo</label><select name="tipo" id="sel-tipo" onchange="document.getElementById('just-box').style.display = this.value === 'ausente' ? 'block' : 'none'">
+        <option value="vacaciones">✈️ Vacaciones</option>
+        <option value="ausente">❌ Ausencia</option>
+        <option value="medico">🏥 Turno médico</option>
+        <option value="libre">📅 Día libre</option>
+        <option value="salida">🕐 Salida autorizada</option>
+        <option value="remoto">📱 Fichaje remoto</option>
+      </select></div>
+      <div id="just-box" style="display:none"><label>Justificada</label><select name="justificada"><option value="si">Sí</option><option value="no">No</option></select></div>
+      <div><label>Desde</label><input type="date" name="desde" required></div>
+      <div><label>Días</label><input type="number" name="dias" value="1" min="1" max="60" style="width:4.5rem"></div>
+      <div><label>Motivo (opcional)</label><input type="text" name="motivo" placeholder=""></div>
+      <button type="submit">➕ Cargar</button>
+    </form>
+    <p style="font-size:0.7rem;color:var(--text-muted);margin-bottom:1rem">Vacaciones: días <strong>corridos</strong> (cuentan findes) y arrancan lunes. El resto se carga por día hábil.</p>`;
+
+  const badgeJust = (n) => n.tipo !== 'ausente' ? '' :
+    n.justificada === 0 ? ' <span class="badge missing">Injustificada</span>' : ' <span class="badge tracked">Justificada</span>';
+  const novRows = novedades.map(n => `
+    <tr>
+      <td>${n.nombre || n.user_id}</td>
+      <td>${txt.NOVEDADES[n.tipo] || n.tipo}${badgeJust(n)}</td>
+      <td>${n.dias === 1 ? t.fmtDate(n.desde) : `${t.fmtDate(n.desde)} – ${t.fmtDate(n.hasta)}`}</td>
+      <td>${n.dias}</td>
+      <td style="font-size:0.8rem;color:var(--text-muted)">${n.motivo || '—'}</td>
+      <td><form method="POST" action="/dashboard/ausencias/borrar" style="display:inline" onsubmit="return confirm('¿Borrar esta novedad completa (${n.dias} día${n.dias > 1 ? 's' : ''})?')">
+        <input type="hidden" name="ids" value="${n.ids.join(',')}">
+        <button type="submit" style="${btnMini}">🗑️</button>
+      </form></td>
+    </tr>`).join('');
+
+  const vacRows = vacaciones.map(v => {
+    const proximas = v.proximas.length
+      ? v.proximas.map(r => `${t.fmtDate(r.desde)} – ${t.fmtDate(r.hasta)} (${r.dias}d)`).join('<br>')
+      : '<span style="color:var(--text-muted)">—</span>';
+    const c = v.quedan < 0 ? 'var(--red)' : v.quedan <= 5 ? 'var(--yellow)' : 'var(--green)';
+    return `
+    <tr>
+      <td>${v.nombre}${v.enCurso ? ' <span class="badge partial">De vacaciones</span>' : ''}</td>
+      <td><form method="POST" action="/dashboard/ausencias/vacaciones-config" style="display:flex;gap:0.35rem;align-items:center">
+        <input type="hidden" name="user_id" value="${v.slack_id}">
+        <input type="number" name="dias" value="${v.anuales}" min="0" max="60" step="0.5" style="${inpMini};width:4.5rem">
+        <button type="submit" style="${btnMini}" title="Guardar días anuales">💾</button>
+      </form></td>
+      <td>${v.cargadas}</td>
+      <td>${v.usadas}</td>
+      <td style="color:${c};font-weight:600">${v.quedan}</td>
+      <td style="font-size:0.8rem">${proximas}</td>
+    </tr>`;
+  }).join('');
+
+  return layout('Ausencias', 'ausencias', `
+    ${banner}
+    <div class="card" style="margin-bottom:1.5rem"><h3>➕ Cargar ausencia / vacaciones</h3>${formAlta}</div>
+    <div class="card" style="margin-bottom:1.5rem"><h3>✈️ Vacaciones ${t.today().slice(0, 4)} — días corridos</h3>
+      ${vacaciones.length ? `<table><thead><tr><th>Persona</th><th>Corresponden</th><th>Cargados</th><th>Ya tomados</th><th>Quedan</th><th>Próximas</th></tr></thead><tbody>${vacRows}</tbody></table>` : '<p class="empty">Sin personas trackeadas</p>'}
+      <p style="font-size:0.7rem;color:var(--text-muted);margin-top:0.75rem">Default: 21 días anuales (14 en verano + 7 en invierno), corridos, arrancando lunes. "Cargados" = todos los del año (incluye futuros); "Quedan" = corresponden − cargados.</p>
+    </div>
+    <div class="card"><h3>📋 Novedades desde el 1° del mes</h3>
+      ${novedades.length ? `<table><thead><tr><th>Persona</th><th>Tipo</th><th>Fechas</th><th>Días</th><th>Motivo</th><th></th></tr></thead><tbody>${novRows}</tbody></table>` : '<p class="empty">Sin novedades cargadas</p>'}
     </div>`);
 };
 

@@ -192,6 +192,14 @@ try { db.exec('ALTER TABLE proyectos ADD COLUMN cliente TEXT'); } catch (_) { /*
 try { db.exec("ALTER TABLE users ADD COLUMN modo TEXT DEFAULT 'completo'"); } catch (_) { /* ya existe */ }
 // Migración: tipo de token — marcar | imputar (links web distintos, no intercambiables)
 try { db.exec("ALTER TABLE tokens ADD COLUMN tipo TEXT DEFAULT 'marcar'"); } catch (_) { /* ya existe */ }
+// Migración: días de vacaciones anuales por persona (corridos; default 21 = 14 verano + 7 invierno)
+try { db.exec('ALTER TABLE users ADD COLUMN vacaciones_anuales REAL DEFAULT 21'); } catch (_) { /* ya existe */ }
+// Migración: ausencias justificadas o no (NULL = no aplica)
+try { db.exec('ALTER TABLE novedades ADD COLUMN justificada INTEGER'); } catch (_) { /* ya existe */ }
+// Migración de datos: la tolerancia de 10 minutos aplica también a los
+// registros históricos (idempotente — corre en cada arranque sin efecto)
+db.exec('UPDATE registros SET tarde_min = 0 WHERE tarde_min > 0 AND tarde_min <= 10');
+db.exec('UPDATE registros SET anticipado_min = 0 WHERE anticipado_min > 0 AND anticipado_min <= 10');
 
 const TIPOS_ORDEN = ['entrada', 'almuerzo_inicio', 'almuerzo_fin', 'salida'];
 const NOVEDADES_EXENTAS = ['feriado', 'vacaciones', 'medico', 'ausente', 'libre'];
@@ -248,11 +256,20 @@ const horasDia = (dia) => {
  * Registra una marcación con hora del servidor.
  * Calcula tarde_min (entrada) y anticipado_min (salida) contra el horario personal.
  */
+// Tolerancia: 10' de gracia sobre el horario personal (9:30 → tarde recién
+// después de 9:40; 18:30 → salida ok desde 18:20). Dentro de la tolerancia
+// no se marca nada.
+const TOLERANCIA_MIN = 10;
+
 const registrar = (user, fecha, tipo, hora, origen, extra = {}) => {
   let tarde = 0, anticipado = 0;
-  if (tipo === 'entrada') tarde = Math.max(0, t.toMin(hora) - t.toMin(user.hora_entrada));
+  if (tipo === 'entrada') {
+    tarde = Math.max(0, t.toMin(hora) - t.toMin(user.hora_entrada));
+    if (tarde <= TOLERANCIA_MIN) tarde = 0;
+  }
   if (tipo === 'salida' && !hasNovedad(user.slack_id, fecha, 'salida')) {
     anticipado = Math.max(0, t.toMin(user.hora_salida) - t.toMin(hora));
+    if (anticipado <= TOLERANCIA_MIN) anticipado = 0;
   }
   db.prepare(`INSERT INTO registros (user_id, fecha, tipo, hora, tarde_min, anticipado_min, origen, auto_closed, nota)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -321,9 +338,88 @@ const getDias = (from, to, userId = null) => {
 // ═══════════════════════════════════════════════════════════════════
 // NOVEDADES
 // ═══════════════════════════════════════════════════════════════════
-const addNovedad = (userId, tipo, fecha, motivo, creadoPor) =>
-  db.prepare('INSERT INTO novedades (user_id, tipo, fecha, motivo, creado_por) VALUES (?, ?, ?, ?, ?)')
-    .run(userId, tipo, fecha, motivo || null, creadoPor);
+const addNovedad = (userId, tipo, fecha, motivo, creadoPor, justificada = null) =>
+  db.prepare('INSERT INTO novedades (user_id, tipo, fecha, motivo, creado_por, justificada) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(userId, tipo, fecha, motivo || null, creadoPor, justificada);
+
+const borrarNovedad = (id) => db.prepare('DELETE FROM novedades WHERE id = ?').run(id);
+
+/**
+ * Carga una novedad para un rango de días arrancando en `desde`.
+ * Vacaciones se cuentan CORRIDAS (incluyen findes); el resto, por día hábil.
+ * Dedupe por (user, fecha, tipo). Devuelve las fechas cargadas.
+ */
+const cargarNovedadRango = (userId, tipo, desde, dias, { motivo, creadoPor, justificada = null } = {}) => {
+  const corridos = tipo === 'vacaciones';
+  const fechas = [];
+  let d = t.dayjs(desde);
+  while (fechas.length < dias) {
+    const ds = d.format('YYYY-MM-DD');
+    if (corridos || t.isWeekday(ds)) {
+      if (!hasNovedad(userId, ds, tipo)) addNovedad(userId, tipo, ds, motivo, creadoPor, justificada);
+      fechas.push(ds);
+    }
+    d = d.add(1, 'day');
+  }
+  return fechas;
+};
+
+const setVacacionesAnuales = (id, dias) =>
+  db.prepare('UPDATE users SET vacaciones_anuales = ? WHERE slack_id = ?').run(dias, id);
+
+/** Fechas de vacaciones de una persona en un año (corridas, como se cargan) */
+const vacacionesFechas = (userId, anio) => db.prepare(
+  "SELECT fecha FROM novedades WHERE user_id = ? AND tipo = 'vacaciones' AND fecha LIKE ? ORDER BY fecha")
+  .all(userId, `${anio}-%`).map(r => r.fecha);
+
+/** Agrupa fechas ISO consecutivas en rangos [{desde, hasta, dias}] */
+const agruparRangos = (fechas) => {
+  const rangos = [];
+  for (const f of fechas) {
+    const ult = rangos[rangos.length - 1];
+    if (ult && t.dayjs(f).diff(t.dayjs(ult.hasta), 'day') === 1) { ult.hasta = f; ult.dias++; }
+    else rangos.push({ desde: f, hasta: f, dias: 1 });
+  }
+  return rangos;
+};
+
+/** Panorama de vacaciones por persona trackeada: saldo del año + rangos */
+const vacacionesResumen = () => {
+  const anio = t.today().slice(0, 4);
+  const hoy = t.today();
+  return getTracked().map(u => {
+    const fechas = vacacionesFechas(u.slack_id, anio);
+    const rangos = agruparRangos(fechas);
+    const usadas = fechas.filter(f => f <= hoy).length;
+    const proximas = rangos.filter(r => r.hasta >= hoy);
+    return {
+      slack_id: u.slack_id, nombre: u.nombre, equipo: u.equipo,
+      anuales: u.vacaciones_anuales ?? 21,
+      cargadas: fechas.length, usadas,
+      quedan: Math.round(((u.vacaciones_anuales ?? 21) - fechas.length) * 10) / 10,
+      proximas, enCurso: fechas.includes(hoy),
+    };
+  });
+};
+
+/** Novedades desde una fecha, agrupadas en rangos por persona+tipo (para gestión web) */
+const novedadesRangosAdmin = (desde) => {
+  const rows = db.prepare(`
+    SELECT n.*, u.nombre FROM novedades n LEFT JOIN users u ON u.slack_id = n.user_id
+    WHERE n.fecha >= ? AND n.user_id IS NOT NULL ORDER BY n.user_id, n.tipo, n.fecha`).all(desde);
+  const grupos = [];
+  for (const r of rows) {
+    const ult = grupos[grupos.length - 1];
+    if (ult && ult.user_id === r.user_id && ult.tipo === r.tipo
+        && t.dayjs(r.fecha).diff(t.dayjs(ult.hasta), 'day') === 1) {
+      ult.hasta = r.fecha; ult.dias++; ult.ids.push(r.id);
+    } else {
+      grupos.push({ user_id: r.user_id, nombre: r.nombre, tipo: r.tipo, motivo: r.motivo,
+        justificada: r.justificada, desde: r.fecha, hasta: r.fecha, dias: 1, ids: [r.id] });
+    }
+  }
+  return grupos.sort((a, b) => a.desde < b.desde ? -1 : 1);
+};
 
 const getNovedadesFecha = (fecha) => db.prepare(`
   SELECT n.*, u.nombre FROM novedades n LEFT JOIN users u ON u.slack_id = n.user_id
@@ -347,6 +443,56 @@ const isExento = (userId, fecha) => db.prepare(`
   SELECT 1 FROM novedades WHERE fecha = ?
     AND ((user_id IS NULL AND tipo = 'feriado') OR (user_id = ? AND tipo IN (${NOVEDADES_EXENTAS.map(() => '?').join(',')})))
   `).get(fecha, userId, ...NOVEDADES_EXENTAS) != null;
+
+// ─── Evaluación de asistencia ───────────────────────────────────────
+// Día OK = completo, sin tarde (>10' de tolerancia), sin salida anticipada
+// (>10') y con almuerzo de hasta 1 hora (+10'). Solo días ya terminados.
+const ALMUERZO_MAX_MIN = 60 + TOLERANCIA_MIN;
+
+const evaluacionUsuario = (user, from, to) => {
+  const r = {
+    esperados: 0, presentes: 0, ok: 0, tardes: 0, anticipadas: 0, almuerzosLargos: 0,
+    autoCierres: 0, ausJust: 0, ausInjust: 0, sinAviso: 0, exentos: 0,
+    horas: 0, horasEsperadas: 0,
+  };
+  const hoy = t.today();
+  let d = t.dayjs(from);
+  const end = t.dayjs(to);
+  while (d.isBefore(end) || d.isSame(end, 'day')) {
+    const ds = d.format('YYYY-MM-DD');
+    d = d.add(1, 'day');
+    if (!t.isWeekday(ds) || ds >= hoy) continue; // solo días hábiles ya cerrados
+    if (isExento(user.slack_id, ds)) {
+      r.exentos++;
+      const aus = db.prepare("SELECT justificada FROM novedades WHERE user_id = ? AND fecha = ? AND tipo = 'ausente'").get(user.slack_id, ds);
+      if (aus) (aus.justificada === 0 ? r.ausInjust++ : r.ausJust++);
+      continue;
+    }
+    r.esperados++;
+    r.horasEsperadas += user.carga_horaria;
+    const dia = getDia(user.slack_id, ds);
+    if (!dia.entrada) { r.sinAviso++; continue; }
+    r.presentes++;
+    const h = horasDia(dia);
+    if (h != null) r.horas += h;
+    const tarde = (dia.entrada.tarde_min || 0) > TOLERANCIA_MIN;
+    const anticipada = (dia.salida?.anticipado_min || 0) > TOLERANCIA_MIN;
+    const almuerzoMin = dia.almuerzo_inicio && dia.almuerzo_fin
+      ? t.toMin(dia.almuerzo_fin.hora) - t.toMin(dia.almuerzo_inicio.hora) : null;
+    const almLargo = almuerzoMin != null && almuerzoMin > ALMUERZO_MAX_MIN;
+    const auto = dia.salida?.auto_closed === 1 && !dia.salida.corregido;
+    if (tarde) r.tardes++;
+    if (anticipada) r.anticipadas++;
+    if (almLargo) r.almuerzosLargos++;
+    if (auto) r.autoCierres++;
+    if (dia.salida && !tarde && !anticipada && !almLargo) r.ok++;
+  }
+  r.horas = Math.round(r.horas * 10) / 10;
+  r.horasEsperadas = Math.round(r.horasEsperadas * 10) / 10;
+  r.pct = r.esperados ? Math.round((r.ok / r.esperados) * 100) : null;
+  r.semaforo = r.pct == null ? '—' : r.pct >= 85 ? '🟢' : r.pct >= 65 ? '🟡' : '🔴';
+  return r;
+};
 
 /** Días hábiles esperados para una persona en un rango (excluye feriados y novedades exentas) */
 const diasEsperados = (userId, from, to) => {
@@ -613,7 +759,8 @@ module.exports = {
   db, TIPOS_ORDEN, NOVEDADES_EXENTAS,
   upsertUser, getUser, getAllUsers, getTracked, setTracked, setAdmin, setHorario, setEquipo, setModo, esSoloProyectos, isAdmin, isSuperAdmin,
   getDia, nextTipo, horasDia, registrar, imputarAlmuerzo, corregirSalida, getDias,
-  addNovedad, getNovedadesFecha, getNovedadesRange, isFeriado, getFeriados, hasNovedad, isExento, diasEsperados,
+  addNovedad, borrarNovedad, cargarNovedadRango, getNovedadesFecha, getNovedadesRange, isFeriado, getFeriados, hasNovedad, isExento, diasEsperados,
+  setVacacionesAnuales, vacacionesResumen, novedadesRangosAdmin, evaluacionUsuario, TOLERANCIA_MIN,
   createToken, peekToken, consumeToken,
   getCierre, setCierre,
   logPresencia, presenciaSummary, presenciaPorDia, ultimaActividad,

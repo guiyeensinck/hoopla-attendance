@@ -266,14 +266,12 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
           if (!uid) { await say(txt.errores.faltaMencion); return; }
           if (!t.isValidDate(desde) || !t.isValidDate(hasta)) { await say(txt.errores.fechaInvalida); return; }
           await ensureUser(client, uid);
-          // Un registro por día hábil
-          let d = t.dayjs(desde); const end = t.dayjs(hasta); let count = 0;
-          while (d.isBefore(end) || d.isSame(end, 'day')) {
-            const ds = d.format('YYYY-MM-DD');
-            if (t.isWeekday(ds)) { db.addNovedad(uid, 'vacaciones', ds, 'Vacaciones', adminId); count++; }
-            d = d.add(1, 'day');
-          }
-          await say(`✈️ Vacaciones de *${db.getUser(uid)?.nombre || uid}*: ${count} días hábiles (${desde} a ${hasta}).`);
+          // Vacaciones se cuentan CORRIDAS (incluyen findes) y arrancan lunes
+          const dias = t.dayjs(hasta).diff(t.dayjs(desde), 'day') + 1;
+          if (dias < 1) { await say('⚠️ La fecha "hasta" tiene que ser posterior a "desde".'); return; }
+          db.cargarNovedadRango(uid, 'vacaciones', desde, dias, { motivo: 'Vacaciones', creadoPor: adminId });
+          const avisoLunes = t.dayjs(desde).day() === 1 ? '' : '\n⚠️ Ojo: no arrancan un lunes (la política es arrancar los lunes).';
+          await say(`✈️ Vacaciones de *${db.getUser(uid)?.nombre || uid}*: ${dias} días corridos (${desde} a ${hasta}).${avisoLunes}\n_El saldo anual se ve en el dashboard → Ausencias._`);
           break;
         }
         case 'medico': {

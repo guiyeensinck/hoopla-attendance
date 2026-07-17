@@ -18,6 +18,7 @@ No hay slash commands. Cada persona abre el DM del bot (aparece en su sidebar de
 4 por día: **entrada → inicio almuerzo → fin almuerzo → salida**. Horas trabajadas = salida − entrada − almuerzo.
 
 - Escribirle **`marcar`** al bot (o tocar el botón del menú) responde con un **link de un solo uso que expira en 5 minutos**. Al registrar en la web, el bot confirma por DM — todo el historial del día queda en la conversación.
+- **Tolerancia de 10 minutos** sobre el horario personal: con horario 9:30–18:30, la entrada cuenta como tarde recién después de las 9:40 y la salida es "en horario" desde las 18:20. El almuerzo esperado es de 1 hora (misma tolerancia). Aplica también retroactivamente a los registros históricos.
 - La página web valida el token y **bloquea user agents mobile** (iOS/Android/patrones comunes). Si es mobile: no registra, muestra "El registro solo puede hacerse desde una computadora" y **loguea el intento** para el reporte admin.
 - La hora la pone **siempre el servidor**, nunca el usuario.
 - Entrada después del horario personal → flag `tarde_min`. Salida antes → flag `anticipado_min`.
@@ -113,6 +114,11 @@ El admin mantiene el catálogo (`admin proyecto agregar Cliente / Proyecto` — 
 - Alternativa con clicks: el botón **"🖱️ Cargar con clicks"** (en el prompt de salida y en `proyectos`) manda un link de un solo uso (30 min) a `/imputar/:token`, un formulario con selects de proyecto + categoría + horas, filas agregables y total en vivo. Anda desde el celular.
 - **"Mi semana en proyectos"**: cada persona puede ver su detalle (día por día, totales de semana y mes con barras) en una web personal `/misemana/:token` — se pide por DM escribiendo `mi semana` (o `mis horas`, `en qué trabajé`) o con el botón "📊 Mi semana en proyectos" que acompaña a `proyectos`. El link dura 30 min y se puede refrescar.
 - **Gestión web del catálogo** (admins): en `/dashboard/proyectos` se pueden crear, editar (cliente y nombre inline, las horas siguen al proyecto), archivar y reactivar proyectos. `admin proyectos` por DM incluye el link directo.
+
+### Evaluación, ausencias y vacaciones (dashboard)
+- **Registros → filtrar por persona** muestra su evaluación de asistencia: semana, mes y acumulado, con semáforo (🟢 ≥85% · 🟡 ≥65% · 🔴) según % de días OK (puntual + salida en horario + almuerzo ≤1h, tolerancia 10'). Detalla tardes, salidas anticipadas, almuerzos largos, auto-cierres, días sin aviso y ausencias injustificadas. Solo cuenta días hábiles ya cerrados; justificadas y vacaciones no penalizan.
+- **Pestaña Ausencias**: carga de vacaciones/ausencias (justificada o no)/médico/libre/salida/remoto por persona con fecha de inicio y cantidad de días; lista lo cargado del mes en adelante agrupado en rangos, con borrado.
+- **Vacaciones**: se cargan en días **corridos** (cuentan findes) y arrancan lunes (avisa si no). Cada persona tiene sus días anuales configurables (default 21 = 14 verano + 7 invierno); el panel muestra corresponden / cargados / tomados / quedan y las próximas fechas de cada uno. `admin vacaciones @user DESDE HASTA` por DM también cuenta corridos.
 - La imputación se ancla a las horas reales del día (avisa si no coinciden). Mandar una nueva el mismo día **reemplaza** la anterior. Cada par acepta una **categoría de trabajo** opcional (campaña, redes, website, branding, btl, ajustes, otro): `Jumbo 3 redes, Jumbo 2 campaña`.
 - Si responde a la mañana siguiente, se imputa al último día hábil con salida sin imputar.
 - `proyectos` (por DM) muestra los activos y lo imputado hoy/esta semana.
