@@ -211,14 +211,16 @@ const buscarProyecto = (nombre) => matchProyecto(nombre).proyecto || null;
 // ─── Imputación ─────────────────────────────────────────────────────
 
 /**
- * A qué fecha aplica una imputación: hoy si ya hay salida (o todavía
- * no hay nada mejor); si no hay salida hoy pero el último día hábil
- * tiene salida y quedó sin imputar, aplica a ese día (contestó el
- * prompt a la mañana siguiente).
+ * A qué fecha aplica una imputación: si hoy ya tiene alguna marcación
+ * (jornada en curso o cerrada), va para HOY. Solo va para el último
+ * día hábil cuando hoy no arrancó y ese día quedó con salida sin
+ * imputar (contestó el prompt de anoche a la mañana siguiente, antes
+ * de marcar entrada). El prefijo "ayer:" / "hoy:" fuerza el destino.
  */
 const fechaDestino = (userId) => {
   const hoy = t.today();
-  if (db.getDia(userId, hoy).salida) return hoy;
+  const dia = db.getDia(userId, hoy);
+  if (dia.salida || dia.entrada) return hoy;
   const anterior = t.haceDiasHabiles(1);
   if (db.getDia(userId, anterior).salida && !db.hayImputaciones(userId, anterior)) return anterior;
   return hoy;
@@ -245,7 +247,11 @@ const guardarYResumir = (user, fecha, finales, origen = 'chat', nota) => {
     ? `\n⚠️ Ojo: imputaste ${total}hs y trabajaste ${trabajadas}hs — si fue sin querer, mandame la corrección.` : '';
   const desde = origen === 'web' ? ' (desde la web)' : '';
   const notaPrevias = nota !== undefined ? nota : (habia ? ' _(reemplacé lo que habías cargado)_' : '');
-  return `🗂️ Imputado${desde} para el ${t.fmtDate(fecha)}: ${detalle}\nTotal: *${total}hs*${comparacion}.${notaPrevias}${aviso}`;
+  // Que la fecha no pase desapercibida cuando NO es hoy
+  const esHoy = fecha === t.today();
+  const dia = esHoy ? `hoy ${t.fmtDate(fecha)}` : `⚠️ *AYER ${t.fmtDate(fecha)}*`;
+  const tipDia = esHoy ? '' : '\n_Si en realidad era de hoy, reenviámelo empezando con `hoy:` — y para rehacer lo de ayer escribí *cargar* y elegí el día en el formulario._';
+  return `🗂️ Imputado${desde} para ${dia}: ${detalle}\nTotal: *${total}hs*${comparacion}.${notaPrevias}${aviso}${tipDia}`;
 };
 
 /**
@@ -256,6 +262,15 @@ const guardarYResumir = (user, fecha, finales, origen = 'chat', nota) => {
  */
 const procesarImputacion = (user, texto) => {
   if (!db.getProyectos(true).length) return null;
+
+  // "ayer: jumbo 2, coral 1" / "hoy: ..." fuerzan el día de destino
+  let destinoForzado = null;
+  const mPrefijo = (texto || '').match(/^\s*(ayer|hoy)\b\s*[:,]?\s+/i);
+  if (mPrefijo) {
+    destinoForzado = normalize(mPrefijo[1]) === 'ayer' ? t.haceDiasHabiles(1) : t.today();
+    texto = texto.slice(mPrefijo[0].length);
+  }
+
   const { pares, fallos } = parsearImputacion(texto);
   if (!pares.length) return null;
 
@@ -282,7 +297,7 @@ const procesarImputacion = (user, texto) => {
     return lineas.join('\n');
   }
 
-  const fecha = fechaDestino(user.slack_id);
+  const fecha = destinoForzado || fechaDestino(user.slack_id);
   const clave = (r) => `${r.proyecto_id}|${r.categoria || ''}`;
 
   // Duplicados de proyecto+categoría en el mismo mensaje → se suman
