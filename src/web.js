@@ -4,7 +4,7 @@ const db = require('./database');
 const txt = require('./texts');
 const { isMobileUA } = require('./verification');
 const { semanaUsuario } = require('./balance');
-const { promptImputacion } = require('./proyectos');
+const { promptImputacion, fechaDestino, guardarYResumir, CATEGORIAS } = require('./proyectos');
 const { miniLayout } = require('./styles');
 
 /**
@@ -97,8 +97,65 @@ const setupWeb = (receiver, slackClient = null) => {
   });
 
   receiver.app.use('/verify', router);
+
+  // ─── Formulario de imputación con selects ─────────────────────────
+  // Sin bloqueo mobile: imputar horas no es una marcación de asistencia.
+  const imputar = express.Router();
+  imputar.use(express.urlencoded({ extended: true }));
+
+  const contextoImputar = (userId) => {
+    const user = db.getUser(userId);
+    const fecha = fechaDestino(userId);
+    const trabajadas = db.horasDia(db.getDia(userId, fecha)) ?? user.carga_horaria;
+    return { user, fecha, trabajadas, existentes: db.getImputacionesDia(userId, fecha), proyectos: db.getProyectos(true) };
+  };
+
+  imputar.get('/:token', (req, res) => {
+    const userId = db.peekToken(req.params.token, 'imputar');
+    if (!userId) { res.status(410).send(renderError(txt.web.linkInvalido, txt.imputar.webLinkInvalido)); return; }
+    res.send(renderImputar({ token: req.params.token, ...contextoImputar(userId), error: null }));
+  });
+
+  imputar.post('/:token', (req, res) => {
+    try {
+      const userId = db.peekToken(req.params.token, 'imputar');
+      if (!userId) { res.status(410).send(renderError(txt.web.linkInvalido, txt.imputar.webLinkInvalido)); return; }
+
+      const ctx = contextoImputar(userId);
+      const proys = [].concat(req.body.proyecto || []);
+      const cats = [].concat(req.body.categoria || []);
+      const hrs = [].concat(req.body.horas || []);
+
+      // Filas → pares {proyecto_id, nombre, horas, categoria}, sumando duplicados
+      const porClave = {};
+      for (let i = 0; i < proys.length; i++) {
+        const pid = parseInt(proys[i], 10);
+        const h = parseFloat(hrs[i]);
+        if (!pid || !(h > 0)) continue; // fila vacía
+        const proyecto = ctx.proyectos.find(p => p.id === pid);
+        if (!proyecto || h > 16) { res.send(renderImputar({ token: req.params.token, ...ctx, error: 'Revisá las filas: proyecto válido y horas entre 0.25 y 16.' })); return; }
+        const categoria = CATEGORIAS.includes(cats[i]) ? cats[i] : null;
+        const clave = `${pid}|${categoria || ''}`;
+        porClave[clave] = porClave[clave] || { proyecto_id: pid, nombre: proyecto.nombre, horas: 0, categoria };
+        porClave[clave].horas = Math.round((porClave[clave].horas + h) * 100) / 100;
+      }
+      const finales = Object.values(porClave);
+      if (!finales.length) { res.send(renderImputar({ token: req.params.token, ...ctx, error: 'Cargá al menos una fila con proyecto y horas.' })); return; }
+      if (finales.reduce((s, p) => s + p.horas, 0) > 24) { res.send(renderImputar({ token: req.params.token, ...ctx, error: 'El total no puede superar las 24hs.' })); return; }
+
+      db.consumeToken(req.params.token, 'imputar');
+      const resumen = guardarYResumir(ctx.user, ctx.fecha, finales, 'web');
+      confirmarPorDM(userId, resumen);
+      res.send(renderImputarOk({ user: ctx.user, fecha: ctx.fecha, trabajadas: ctx.trabajadas, finales }));
+    } catch (err) {
+      console.error('[web] Error en POST /imputar:', err.message);
+      res.status(500).send(renderError('Error', 'Algo falló al guardar. Escribile "proyectos" al bot en Slack y pedí otro link.'));
+    }
+  });
+
+  receiver.app.use('/imputar', imputar);
   receiver.app.get('/health', (_req, res) => res.json({ ok: true, ts: t.now().format() }));
-  console.log('[web] Rutas /verify/:token y /health listas');
+  console.log('[web] Rutas /verify/:token, /imputar/:token y /health listas');
 };
 
 // ─── Renders ────────────────────────────────────────────────────────
@@ -170,6 +227,112 @@ const renderResultado = ({ user, dia, titulo, detalle }) => {
         ${balanceMsg}
       </div>
     </div>`);
+};
+
+// ─── Formulario de imputación ───────────────────────────────────────
+
+const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const opcionesProyectos = (proyectos, seleccionado = null) => {
+  const grupos = {};
+  for (const p of proyectos) (grupos[p.cliente || 'Otros'] ||= []).push(p);
+  return ['<option value="">— proyecto —</option>']
+    .concat(Object.keys(grupos).sort().map(cli =>
+      `<optgroup label="${esc(cli)}">${grupos[cli].map(p =>
+        `<option value="${p.id}"${p.id === seleccionado ? ' selected' : ''}>${esc(p.nombre)}</option>`).join('')}</optgroup>`))
+    .join('');
+};
+
+const opcionesCategorias = (seleccionada = null) =>
+  ['<option value="">sin categoría</option>']
+    .concat(CATEGORIAS.map(c => `<option value="${esc(c)}"${c === seleccionada ? ' selected' : ''}>${esc(c)}</option>`))
+    .join('');
+
+const filaImputar = (proyectos, imp = null) => `
+  <div class="fila-imp">
+    <select name="proyecto" class="sel-proyecto">${opcionesProyectos(proyectos, imp?.proyecto_id ?? null)}</select>
+    <div class="fila-imp-detalle">
+      <select name="categoria">${opcionesCategorias(imp?.categoria ?? null)}</select>
+      <input type="number" name="horas" min="0.25" max="16" step="0.25" placeholder="hs" value="${imp ? imp.horas : ''}" class="inp-horas">
+      <button type="button" class="btn-quitar" onclick="quitarFila(this)">✕</button>
+    </div>
+  </div>`;
+
+const renderImputar = ({ token, user, fecha, trabajadas, existentes, proyectos, error }) => {
+  // Prefill con lo ya imputado (editar reemplaza el día) o una fila vacía
+  const filas = existentes.length
+    ? existentes.map(i => filaImputar(proyectos, i)).join('')
+    : filaImputar(proyectos);
+
+  return miniLayout('Imputar horas', `
+    <style>
+      .fila-imp { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem; margin-bottom: 0.75rem; }
+      .fila-imp select, .fila-imp input { background: var(--surface); border: 1px solid var(--border); color: var(--text); padding: 0.5rem; border-radius: 6px; font-family: inherit; font-size: 0.85rem; }
+      .sel-proyecto { width: 100%; margin-bottom: 0.5rem; }
+      .fila-imp-detalle { display: flex; gap: 0.5rem; }
+      .fila-imp-detalle select { flex: 1; }
+      .inp-horas { width: 5.5rem; }
+      .btn-quitar { background: none; border: 1px solid var(--border); color: var(--text-muted); border-radius: 6px; padding: 0 0.6rem; cursor: pointer; font-family: inherit; }
+      .btn-quitar:hover { color: var(--red); border-color: var(--red); }
+      .btn-agregar { width: 100%; background: none; border: 1px dashed var(--border); color: var(--text-muted); padding: 0.6rem; border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 0.85rem; margin-bottom: 1rem; }
+      .btn-agregar:hover { color: var(--accent-light); border-color: var(--accent); }
+      #total-linea { display: flex; justify-content: space-between; padding: 0.6rem 0.25rem; font-size: 0.9rem; font-weight: 600; }
+    </style>
+    <div class="verify-card">
+      <h2>${txt.imputar.webTitulo}</h2>
+      <p style="text-align:center;color:var(--text-muted);font-size:0.85rem;margin-bottom:1.25rem">${esc(user.nombre)} · ${t.fmtDate(fecha)}${trabajadas != null ? ` · ${trabajadas}hs de jornada` : ''}</p>
+      ${error ? `<p style="text-align:center;color:var(--red);font-size:0.85rem;margin-bottom:1rem">⚠️ ${esc(error)}</p>` : ''}
+      ${existentes.length ? '<p style="text-align:center;color:var(--yellow);font-size:0.8rem;margin-bottom:1rem">Ya tenías horas cargadas para este día — al guardar se reemplazan por lo que dejes acá.</p>' : ''}
+      <form method="POST" action="/imputar/${token}">
+        <div id="filas">${filas}</div>
+        <button type="button" class="btn-agregar" onclick="agregarFila()">+ Agregar proyecto</button>
+        <div id="total-linea"><span>Total</span><span><span id="total">0</span>hs${trabajadas != null ? ` / ${trabajadas}hs` : ''}</span></div>
+        <button type="submit" class="btn-primary">💾 Guardar mi día</button>
+      </form>
+      <p style="text-align:center;font-size:0.75rem;color:var(--text-muted);margin-top:1rem">Podés repetir proyecto con distinta categoría. El link dura 30 minutos.</p>
+    </div>
+    <template id="tpl-fila">${filaImputar(proyectos)}</template>
+    <script>
+      const trabajadas = ${trabajadas != null ? trabajadas : 'null'};
+      function agregarFila() {
+        document.getElementById('filas').insertAdjacentHTML('beforeend', document.getElementById('tpl-fila').innerHTML);
+        recalcular();
+      }
+      function quitarFila(btn) {
+        const filas = document.querySelectorAll('.fila-imp');
+        if (filas.length > 1) btn.closest('.fila-imp').remove();
+        else btn.closest('.fila-imp').querySelectorAll('select,input').forEach(e => e.value = '');
+        recalcular();
+      }
+      function recalcular() {
+        let total = 0;
+        document.querySelectorAll('.inp-horas').forEach(i => { const v = parseFloat(i.value); if (v > 0) total += v; });
+        total = Math.round(total * 100) / 100;
+        const el = document.getElementById('total');
+        el.textContent = total;
+        el.style.color = trabajadas == null ? '' : Math.abs(total - trabajadas) <= 0.5 ? 'var(--green)' : 'var(--yellow)';
+      }
+      document.getElementById('filas').addEventListener('input', recalcular);
+      recalcular();
+    </script>`);
+};
+
+const renderImputarOk = ({ user, fecha, trabajadas, finales }) => {
+  const total = Math.round(finales.reduce((s, p) => s + p.horas, 0) * 10) / 10;
+  const filas = finales.map(p => `
+    <div class="status-row"><span>${esc(p.nombre)}${p.categoria ? ` <span style="color:var(--text-muted)">(${esc(p.categoria)})</span>` : ''}</span><span>${p.horas}hs</span></div>`).join('');
+  return miniLayout('Horas guardadas', `
+    <div class="success-box">
+      <h2>${txt.imputar.webGuardado}</h2>
+      <p style="color:var(--text-muted);font-size:0.85rem">${esc(user.nombre)} — ${t.fmtDate(fecha)}</p>
+    </div>
+    <div class="verify-card" style="margin-top:1rem">
+      ${filas}
+      <div style="display:flex;justify-content:space-between;padding:0.75rem 0 0.25rem;font-size:0.9rem;font-weight:600;">
+        <span>Total</span><span>${total}hs${trabajadas != null ? ` / ${trabajadas}hs` : ''}</span>
+      </div>
+    </div>
+    <p style="text-align:center;font-size:0.8rem;color:var(--text-muted);margin-top:1rem">Te dejé la confirmación por DM. Si querés corregir, pedile otro link al bot (escribile <em>proyectos</em>).</p>`);
 };
 
 module.exports = { setupWeb };

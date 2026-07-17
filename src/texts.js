@@ -38,7 +38,8 @@ module.exports = {
   marcar: {
     linkTitle: '🕒 *¡Hora de marcar!*',
     linkInstructions: (label) => `Vas a registrar: *${label}*. Abrí este link desde tu computadora:`,
-    linkLabel: 'Marcar mi jornada',
+    linkLabel: (emoji, label) => `${emoji} Marcar ${label.toLowerCase()}`,
+    linkLabelCorreccion: '✏️ Corregir mi salida',
     linkCorreccion: 'Tu salida fue cerrada automáticamente. Con este link podés corregirla (una sola vez):',
     expireNote: '⏱️ El link es de un solo uso y expira en 5 minutos.',
     diaCompleto: '✅ Ya tenés la jornada completa registrada por hoy.',
@@ -64,6 +65,22 @@ module.exports = {
     balanceAFavor: (hs) => `Tenés ${hs}hs a favor esta semana. Excelente.`,
     balanceDebe: (hs, hora) => `Te faltan ${hs}hs esta semana. Para compensar hoy, quedate hasta las ${hora}.`,
     balanceDebeGeneral: (hs) => `Te faltan ${hs}hs esta semana. Tenés hasta el viernes para compensar.`,
+  },
+
+  // ─── Imputación de proyectos ──────────────────────────────────────
+  imputar: {
+    btnWeb: '🖱️ Cargar con clicks',
+    linkWeb: (url) => `Acá tenés tu formulario para cargar el día con clicks (dura 30 min):\n👉 <${url}|Cargar mis horas>`,
+    preguntaIntro: '🤔 *Casi — necesito que me aclares algo antes de guardar:*',
+    noEncontrado: (nombre) => `• No encontré ningún proyecto que se llame *${nombre}*.`,
+    ambiguo: (nombre, opciones) => `• Con *${nombre}* no sé a cuál te referís: ${opciones.map(o => `\`${o}\``).join(' / ')}.`,
+    noEntendi: (frase) => `• No entendí esta parte: _"${frase}"_.`,
+    reintento: 'Mandame la imputación de nuevo completa (corrigiendo eso), o cargala con clicks desde la web:',
+    restoNegativo: (base) => `⚠️ Pediste imputar "el resto", pero con lo que detallaste ya llegás a las ${base}hs del día — no queda resto. Mandámela de nuevo.`,
+    webTitulo: '🗂️ ¿En qué trabajaste?',
+    webGuardado: '✅ Horas guardadas',
+    webLinkInvalido: 'Este link ya fue usado o venció (dura 30 minutos). Escribile *proyectos* al bot en Slack y pedile otro con el botón.',
+    confirmacionWeb: (detalle) => `🗂️ Cargaste tus horas desde la web: ${detalle}`,
   },
 
   // ─── "horarios" ───────────────────────────────────────────────────

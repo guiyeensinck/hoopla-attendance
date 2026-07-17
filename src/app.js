@@ -77,12 +77,13 @@ const enviarLink = async (user, say) => {
   const token = db.createToken(user.slack_id);
   const url = `${getBaseUrl()}/verify/${token}`;
   const instrucciones = corregible ? txt.marcar.linkCorreccion : txt.marcar.linkInstructions(txt.TIPOS[next].label);
+  const label = corregible ? txt.marcar.linkLabelCorreccion : txt.marcar.linkLabel(txt.TIPOS[next].emoji, txt.TIPOS[next].label);
 
   await say({
     text: `${txt.marcar.linkTitle} ${url}`,
     blocks: [
       { type: 'section', text: { type: 'mrkdwn', text: txt.marcar.linkTitle } },
-      { type: 'section', text: { type: 'mrkdwn', text: `${instrucciones}\n\n👉 <${url}|${txt.marcar.linkLabel}>` } },
+      { type: 'section', text: { type: 'mrkdwn', text: `${instrucciones}\n\n👉 <${url}|${label}>` } },
       { type: 'context', elements: [{ type: 'mrkdwn', text: txt.marcar.expireNote }] },
     ],
   });
@@ -216,6 +217,15 @@ app.action('menu_semana', async ({ body, ack, client }) => {
   await ack();
   const user = db.getUser(body.user.id);
   if (user?.trackeado) await sayEnDM(client, user.slack_id)({ text: 'Tu estado', blocks: resumenBlocks(user) });
+});
+
+// "Cargar con clicks" — link fresco al formulario web de imputación
+app.action('imputar_web', async ({ body, ack, client }) => {
+  await ack();
+  const user = db.getUser(body.user.id);
+  if (!user?.trackeado) return;
+  const url = `${getBaseUrl()}/imputar/${db.createToken(user.slack_id, 'imputar')}`;
+  await sayEnDM(client, user.slack_id)(txt.imputar.linkWeb(url));
 });
 
 // ═══════════════════════════════════════════════════════════════════

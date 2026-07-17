@@ -190,6 +190,8 @@ try { db.exec('ALTER TABLE users ADD COLUMN equipo TEXT'); } catch (_) { /* ya e
 try { db.exec('ALTER TABLE proyectos ADD COLUMN cliente TEXT'); } catch (_) { /* ya existe */ }
 // Migración: modo de tracking — completo | solo_proyectos (sin asistencia)
 try { db.exec("ALTER TABLE users ADD COLUMN modo TEXT DEFAULT 'completo'"); } catch (_) { /* ya existe */ }
+// Migración: tipo de token — marcar | imputar (links web distintos, no intercambiables)
+try { db.exec("ALTER TABLE tokens ADD COLUMN tipo TEXT DEFAULT 'marcar'"); } catch (_) { /* ya existe */ }
 
 const TIPOS_ORDEN = ['entrada', 'almuerzo_inicio', 'almuerzo_fin', 'salida'];
 const NOVEDADES_EXENTAS = ['feriado', 'vacaciones', 'medico', 'ausente', 'libre'];
@@ -363,24 +365,27 @@ const diasEsperados = (userId, from, to) => {
 // TOKENS (persistidos — sobreviven redeploys)
 // ═══════════════════════════════════════════════════════════════════
 const TOKEN_TTL_MS = 5 * 60 * 1000;
+const TOKEN_TTL_IMPUTAR_MS = 30 * 60 * 1000; // el formulario de imputación lleva más tiempo
 
-const createToken = (userId) => {
+const createToken = (userId, tipo = 'marcar') => {
   db.prepare('DELETE FROM tokens WHERE expira < ?').run(Date.now());
   const token = crypto.randomBytes(24).toString('hex');
-  db.prepare('INSERT INTO tokens (token, user_id, expira) VALUES (?, ?, ?)').run(token, userId, Date.now() + TOKEN_TTL_MS);
+  const ttl = tipo === 'imputar' ? TOKEN_TTL_IMPUTAR_MS : TOKEN_TTL_MS;
+  db.prepare('INSERT INTO tokens (token, user_id, tipo, expira) VALUES (?, ?, ?, ?)').run(token, userId, tipo, Date.now() + ttl);
   return token;
 };
 
 /** Mira el token sin consumirlo. Devuelve user_id o null. */
-const peekToken = (token) => {
+const peekToken = (token, tipo = 'marcar') => {
   const row = db.prepare('SELECT * FROM tokens WHERE token = ?').get(token);
   if (!row || row.usado || row.expira < Date.now()) return null;
+  if ((row.tipo || 'marcar') !== tipo) return null;
   return row.user_id;
 };
 
 /** Consume el token (un solo uso). Devuelve user_id o null. */
-const consumeToken = (token) => {
-  const userId = peekToken(token);
+const consumeToken = (token, tipo = 'marcar') => {
+  const userId = peekToken(token, tipo);
   if (userId) db.prepare('UPDATE tokens SET usado = 1 WHERE token = ?').run(token);
   return userId;
 };

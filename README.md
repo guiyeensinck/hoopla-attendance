@@ -102,13 +102,16 @@ Los recordatorios a la persona se repiten **cada 10 minutos** hasta que marca (u
 Al agregar a alguien al tracking, recibe un **DM de onboarding**: qué registra el sistema, qué ve el admin, cómo marcar, su horario, cómo se cierra el día y cómo avisar ausencias.
 
 ### Time tracking por proyectos (interno)
-El admin mantiene el catálogo (`admin proyecto agregar Cliente / Proyecto` — sin `/` queda sin cliente, ej. Interno). Al registrar la **salida** (web, botón o auto-cierre), el bot pregunta *"¿En qué trabajaste hoy (7.5hs)?"* y la persona responde en el mismo DM con texto libre:
+El admin mantiene el catálogo (`admin proyecto agregar Cliente / Proyecto` — sin `/` queda sin cliente, ej. Interno). Al registrar la **salida** (web, botón o auto-cierre), el bot pregunta *"¿En qué trabajaste hoy (7.5hs)?"* y la persona responde en el mismo DM con lenguaje natural:
 
 ```
-Nike 4, Quilmes 2.5, Interno 1
+2 horas Jumbo, 30 minutos Coral, 1/2 hora en Pitch, el resto en Interno
 ```
 
-- La imputación se ancla a las horas reales del día (avisa si no coinciden). Mandar una nueva el mismo día **reemplaza** la anterior. Cada par acepta una **categoría de trabajo** opcional (campaña, redes, website, branding, btl, otro): `Jumbo 3 redes, Jumbo 2 campaña`.
+- El parser entiende horas ("2", "2.5", "2,5", "hora y media", "media hora"), minutos ("30 minutos"), fracciones ("1/2 hora"), preposiciones ("en", "de"), el formato corto (`Jumbo 3 redes, Interno 2`) y **"el resto en X"** (completa hasta las horas del día). También matchea nombres aproximados: cliente ("autopistas"), typos ("junbo"), espacios ("red bull" → Redbull) y apodos ("hoopla" → Interno, "nuevos negocios" → Pitch).
+- Si no puede matchear algo, **no guarda nada y pregunta** mostrando los candidatos posibles y el catálogo completo.
+- Alternativa con clicks: el botón **"🖱️ Cargar con clicks"** (en el prompt de salida y en `proyectos`) manda un link de un solo uso (30 min) a `/imputar/:token`, un formulario con selects de proyecto + categoría + horas, filas agregables y total en vivo. Anda desde el celular.
+- La imputación se ancla a las horas reales del día (avisa si no coinciden). Mandar una nueva el mismo día **reemplaza** la anterior. Cada par acepta una **categoría de trabajo** opcional (campaña, redes, website, branding, btl, ajustes, otro): `Jumbo 3 redes, Jumbo 2 campaña`.
 - Si responde a la mañana siguiente, se imputa al último día hábil con salida sin imputar.
 - `proyectos` (por DM) muestra los activos y lo imputado hoy/esta semana.
 - Para el admin: `admin proyectos` (horas del mes agrupadas por cliente), `admin reporte proyectos [semana|mes]` (cliente → proyecto → persona, con % por cliente), línea "Por cliente" en el resumen ejecutivo y hoja *Proyectos* en el Excel mensual.
@@ -228,7 +231,7 @@ src/
 ├── scheduler.js     # Motor por minuto (horarios personales) + crons fijos
 ├── activity.js      # Presencia cada 15 min + pings dirigidos
 ├── balance.js       # Balance semanal individual (semáforo, compensación)
-├── web.js           # Páginas /verify/:token (marcación + resumen post-registro)
+├── web.js           # Páginas /verify/:token (marcación) e /imputar/:token (form de horas)
 ├── dashboard.js     # Dashboard web (Hoy, Registros, Actividad, Usuarios)
 ├── excel.js         # Export Excel (3 hojas)
 ├── reports.js       # Resumen diario por excepción + reporte por persona
