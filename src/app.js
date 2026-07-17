@@ -7,6 +7,7 @@ const { semanaUsuario, saldoMes } = require('./balance');
 const { handleAdmin } = require('./admin');
 const { route } = require('./dmrouter');
 const { procesarImputacion, vistaProyectos, promptImputacion } = require('./proyectos');
+const { responderIA } = require('./ia');
 const { setupWeb } = require('./web');
 const { setupDashboard } = require('./dashboard');
 const { setupScheduler } = require('./scheduler');
@@ -198,6 +199,11 @@ app.message(async ({ message, say, client }) => {
     // ¿Es una imputación de horas a proyectos? ("Nike 4, Interno 2")
     const imputacion = procesarImputacion(user, message.text);
     if (imputacion) { await say(imputacion); return; }
+
+    // Modo conversacional (si hay ANTHROPIC_API_KEY): responde con IA
+    // usando el contexto real del día; si no, el menú de siempre
+    const ia = await responderIA(user, message.text, { client, channel: message.channel });
+    if (ia) { await say(ia); return; }
 
     await enviarMenu(user, say);
   } catch (err) {
