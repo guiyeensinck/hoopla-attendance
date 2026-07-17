@@ -387,7 +387,9 @@ const agruparRangos = (fechas) => {
 const vacacionesResumen = () => {
   const anio = t.today().slice(0, 4);
   const hoy = t.today();
-  return getTracked().map(u => {
+  // Todos los usuarios (no solo trackeados): la gente dada de alta en modo
+  // silencioso también tiene vacaciones registradas antes del lanzamiento
+  return getAllUsers().map(u => {
     const fechas = vacacionesFechas(u.slack_id, anio);
     const rangos = agruparRangos(fechas);
     const usadas = fechas.filter(f => f <= hoy).length;

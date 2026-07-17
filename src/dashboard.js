@@ -55,7 +55,7 @@ const setupDashboard = (receiver) => {
   // ─── Ausencias y vacaciones ───────────────────────────────────────
   router.get('/ausencias', (req, res) => {
     res.send(renderAusencias({
-      users: db.getTracked(),
+      users: db.getAllUsers(),
       novedades: db.novedadesRangosAdmin(t.monthStart()),
       vacaciones: db.vacacionesResumen(),
       msg: req.query.msg || null,
