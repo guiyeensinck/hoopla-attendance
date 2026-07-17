@@ -30,7 +30,7 @@ module.exports = {
     menuSaludo: (nombre) => `👋 ¡Hola, ${nombre}! ¿Qué necesitás?`,
     btnMarcar: (label) => `🕒 Marcar ${label}`,
     btnSemana: '📊 Mi semana',
-    menuHint: '_También podés escribirme directo: *marcar* (te mando el link), *horarios* (tu semana) o *proyectos* (imputar tu día)._',
+    menuHint: '_También podés escribirme directo: *marcar* (link de fichaje), *cargar* (tus horas por proyecto, en cualquier momento del día), *horarios* (tu semana) o *proyectos* (catálogo)._',
     adminHint: '_Sos admin: escribí *admin* para ver los comandos de gestión._',
     modoSoloProyectos: (hora) => `ℹ️ *Te configuraron en modo "solo proyectos".*\nNo tenés que marcar entrada/salida ni te van a llegar recordatorios de asistencia. Lo único: cada día alrededor de las ${hora} te voy a preguntar en qué proyectos trabajaste — respondeme tipo \`Jumbo 4, Interno 2\`. También podés mandarme la imputación cuando quieras, sin esperar la pregunta.`,
   },
@@ -71,7 +71,7 @@ module.exports = {
   // ─── Imputación de proyectos ──────────────────────────────────────
   imputar: {
     btnWeb: '🖱️ Cargar con clicks',
-    linkWeb: (url) => `Acá tenés tu formulario para cargar el día con clicks (dura 30 min):\n👉 <${url}|Cargar mis horas>`,
+    linkWeb: (url) => `Acá tenés tu formulario para cargar horas con clicks (dura 30 min):\n👉 <${url}|Cargar mis horas>\n_Podés usarlo en cualquier momento del día — lo que ya cargaste aparece precargado y le sumás filas._`,
     preguntaIntro: '🤔 *Casi — necesito que me aclares algo antes de guardar:*',
     noEncontrado: (nombre) => `• No encontré ningún proyecto que se llame *${nombre}*.`,
     ambiguo: (nombre, opciones) => `• Con *${nombre}* no sé a cuál te referís: ${opciones.map(o => `\`${o}\``).join(' / ')}.`,

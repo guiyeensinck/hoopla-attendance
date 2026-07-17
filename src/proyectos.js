@@ -11,8 +11,10 @@ const { normalize } = require('./dmrouter');
  * responde en el mismo DM con texto libre. El parser entiende lenguaje
  * natural: "2 horas Jumbo, 30 minutos Coral, el resto en Interno".
  * Si algo no matchea, el bot pregunta mostrando las opciones.
- * También hay un formulario web con selects (botón "Cargar con clicks").
- * Mandar una nueva imputación el mismo día reemplaza la anterior.
+ * También hay un formulario web con selects (botón "Cargar con clicks",
+ * o escribiendo "cargar"), usable en cualquier momento del día.
+ * Las imputaciones se van SUMANDO durante el día: repetir un proyecto
+ * lo corrige, y la web permite rehacer el día completo.
  */
 
 // Categorías de trabajo (opcionales al imputar): "Jumbo 3 redes"
@@ -38,8 +40,8 @@ const preprocesar = (s) => s
   .replace(/\bun\s+cuarto\s+de\s+hora\b/gi, '0.25 horas')
   .replace(/\b(?:1\s*\/\s*2|½)\s*(?:hora|hs|h)\b/gi, '0.5 horas')
   .replace(/\buna\s+hora\b/gi, '1 hora')
-  // muletillas de entrada que no aportan: "estuve 2 horas en...", "le dediqué..."
-  .replace(/^(?:hoy\s+)?(?:estuve|trabaje|trabajé|hice|dedique|dediqué|le\s+meti|le\s+metí|puse|meti|metí)\s+/i, '');
+  // muletillas de entrada que no aportan: "estuve 2 horas en...", "terminé de trabajar en..."
+  .replace(/^(?:hoy\s+)?(?:estuve|trabaje|trabajé|hice|dedique|dediqué|le\s+meti|le\s+metí|puse|meti|metí|termine|terminé|termino)(?:\s+de\s+trabajar)?\s+/i, '');
 
 // Cantidad: "2", "2.5", "2,5", "3/4" + unidad opcional (horas o minutos) + "y media/cuarto"
 const CANT_SRC = String.raw`(\d+(?:[.,]\d+)?|\d+\s*\/\s*\d+)\s*(hs\b\.?|h\b|horas?\b|min\b\.?|mins?\b|minutos?\b)?(?:\s+y\s+(media|cuarto)\b)?`;
@@ -233,7 +235,7 @@ const catalogoLineas = () => {
 };
 
 /** Guarda pares resueltos y arma el resumen de confirmación */
-const guardarYResumir = (user, fecha, finales, origen = 'chat') => {
+const guardarYResumir = (user, fecha, finales, origen = 'chat', nota) => {
   const habia = db.setImputaciones(user.slack_id, fecha, finales);
   const total = Math.round(finales.reduce((s, p) => s + p.horas, 0) * 10) / 10;
   const trabajadas = db.horasDia(db.getDia(user.slack_id, fecha));
@@ -242,7 +244,8 @@ const guardarYResumir = (user, fecha, finales, origen = 'chat') => {
   const aviso = trabajadas != null && Math.abs(total - trabajadas) > 0.5
     ? `\n⚠️ Ojo: imputaste ${total}hs y trabajaste ${trabajadas}hs — si fue sin querer, mandame la corrección.` : '';
   const desde = origen === 'web' ? ' (desde la web)' : '';
-  return `🗂️ Imputado${desde} para el ${t.fmtDate(fecha)}: ${detalle}\nTotal: *${total}hs*${comparacion}.${habia ? ' _(reemplacé lo que habías cargado)_' : ''}${aviso}`;
+  const notaPrevias = nota !== undefined ? nota : (habia ? ' _(reemplacé lo que habías cargado)_' : '');
+  return `🗂️ Imputado${desde} para el ${t.fmtDate(fecha)}: ${detalle}\nTotal: *${total}hs*${comparacion}.${notaPrevias}${aviso}`;
 };
 
 /**
@@ -280,26 +283,40 @@ const procesarImputacion = (user, texto) => {
   }
 
   const fecha = fechaDestino(user.slack_id);
-
-  if (resto) {
-    const base = horasBase(user, fecha);
-    const usadas = resueltos.reduce((s, p) => s + p.horas, 0);
-    const sobra = Math.round((base - usadas) * 100) / 100;
-    if (sobra <= 0) return txt.imputar.restoNegativo(base);
-    resto.horas = sobra;
-    resueltos.push(resto);
-  }
+  const clave = (r) => `${r.proyecto_id}|${r.categoria || ''}`;
 
   // Duplicados de proyecto+categoría en el mismo mensaje → se suman
-  const porClave = {};
+  const nuevos = {};
   for (const r of resueltos) {
-    const clave = `${r.proyecto_id}|${r.categoria || ''}`;
-    porClave[clave] = porClave[clave] || { ...r, horas: 0 };
-    porClave[clave].horas += Math.round(r.horas * 100) / 100;
+    nuevos[clave(r)] = nuevos[clave(r)] || { ...r, horas: 0 };
+    nuevos[clave(r)].horas = Math.round((nuevos[clave(r)].horas + r.horas) * 100) / 100;
   }
-  const finales = Object.values(porClave);
 
-  return guardarYResumir(user, fecha, finales);
+  // Merge con lo ya cargado del día: lo nuevo se suma; repetir un
+  // proyecto+categoría lo corrige (toma el valor nuevo). Así se puede
+  // ir cargando de a poco durante el día. Para rehacer todo: la web.
+  const porClave = {};
+  for (const e of db.getImputacionesDia(user.slack_id, fecha)) {
+    porClave[clave(e)] = { proyecto_id: e.proyecto_id, nombre: e.nombre, horas: e.horas, categoria: e.categoria };
+  }
+  const previas = Object.keys(porClave);
+  const pisadas = Object.keys(nuevos).filter(k => porClave[k]);
+  Object.assign(porClave, nuevos);
+
+  if (resto) {
+    delete porClave[clave(resto)]; // si ya existía, el resto lo recalcula
+    const base = horasBase(user, fecha);
+    const usadas = Object.values(porClave).reduce((s, p) => s + p.horas, 0);
+    const sobra = Math.round((base - usadas) * 100) / 100;
+    if (sobra <= 0) return txt.imputar.restoNegativo(base);
+    porClave[clave(resto)] = { ...resto, horas: sobra };
+  }
+
+  const conservadas = previas.filter(k => !pisadas.includes(k) && (!resto || k !== clave(resto))).length;
+  const nota = !previas.length ? ''
+    : conservadas ? ' _(sumado a lo que ya llevabas)_'
+    : ' _(actualicé lo que habías cargado)_';
+  return guardarYResumir(user, fecha, Object.values(porClave), 'chat', nota);
 };
 
 // ─── Vistas / prompts ───────────────────────────────────────────────
@@ -349,12 +366,17 @@ const promptImputacion = async (client, user, fecha) => {
   try {
     const activos = db.getProyectos(true);
     if (!activos.length) return;
-    if (db.hayImputaciones(user.slack_id, fecha)) return;
+    const horas = db.horasDia(db.getDia(user.slack_id, fecha));
+    const imputadas = Math.round(db.getImputacionesDia(user.slack_id, fecha)
+      .reduce((s, i) => s + i.horas, 0) * 10) / 10;
+    // Si cargó durante el día y ya cubre la jornada, no molestar
+    if (imputadas > 0 && (horas == null || imputadas >= horas - 0.5)) return;
     if (db.avisoEnviado(user.slack_id, fecha, 'prompt_imputacion')) return;
     db.marcarAviso(user.slack_id, fecha, 'prompt_imputacion');
 
-    const horas = db.horasDia(db.getDia(user.slack_id, fecha));
-    const text = `🗂️ *¿En qué trabajaste hoy${horas != null ? ` (${horas}hs)` : ''}?*\nContame con tus palabras, por ejemplo: \`2 horas ${activos[0].nombre}${activos[1] ? `, media hora ${activos[1].nombre}` : ''}${activos[2] ? `, el resto en ${activos[2].nombre}` : ''}\`\nO cargá el detalle con clicks tocando el botón. 👇`;
+    const text = imputadas > 0
+      ? `🗂️ *Llevás cargadas ${imputadas}hs de las ${horas}hs de hoy.* ¿Completamos el resto?\nContame con tus palabras (ej: \`el resto en ${activos[0].nombre}\`) o tocá el botón para sumar con clicks. 👇`
+      : `🗂️ *¿En qué trabajaste hoy${horas != null ? ` (${horas}hs)` : ''}?*\nContame con tus palabras, por ejemplo: \`2 horas ${activos[0].nombre}${activos[1] ? `, media hora ${activos[1].nombre}` : ''}${activos[2] ? `, el resto en ${activos[2].nombre}` : ''}\`\nO cargá el detalle con clicks tocando el botón. 👇`;
     await client.chat.postMessage({
       channel: user.slack_id,
       text,

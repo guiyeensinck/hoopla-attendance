@@ -193,6 +193,7 @@ app.message(async ({ message, say, client }) => {
     if (r.tipo === 'horarios') { await say({ text: 'Tu estado', blocks: resumenBlocks(user) }); return; }
     if (r.tipo === 'proyectos') { await say(vistaProyectos(user)); return; }
     if (r.tipo === 'misemana') { await enviarSemanaWeb(user, say); return; }
+    if (r.tipo === 'imputarweb') { await enviarImputarWeb(user, say); return; }
 
     // ¿Es una imputación de horas a proyectos? ("Nike 4, Interno 2")
     const imputacion = procesarImputacion(user, message.text);
@@ -220,13 +221,18 @@ app.action('menu_semana', async ({ body, ack, client }) => {
   if (user?.trackeado) await sayEnDM(client, user.slack_id)({ text: 'Tu estado', blocks: resumenBlocks(user) });
 });
 
-// "Cargar con clicks" — link fresco al formulario web de imputación
+// "Cargar con clicks" — link fresco al formulario web de imputación.
+// Sirve en cualquier momento del día: cargás lo que terminaste y el
+// formulario suma filas sobre lo que ya llevabas.
+const enviarImputarWeb = async (user, say) => {
+  const url = `${getBaseUrl()}/imputar/${db.createToken(user.slack_id, 'imputar')}`;
+  await say(txt.imputar.linkWeb(url));
+};
+
 app.action('imputar_web', async ({ body, ack, client }) => {
   await ack();
   const user = db.getUser(body.user.id);
-  if (!user?.trackeado) return;
-  const url = `${getBaseUrl()}/imputar/${db.createToken(user.slack_id, 'imputar')}`;
-  await sayEnDM(client, user.slack_id)(txt.imputar.linkWeb(url));
+  if (user?.trackeado) await enviarImputarWeb(user, sayEnDM(client, user.slack_id));
 });
 
 // "Mi semana en proyectos" — link a la vista web personal

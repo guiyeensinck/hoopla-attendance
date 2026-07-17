@@ -103,17 +103,20 @@ const setupWeb = (receiver, slackClient = null) => {
   const imputar = express.Router();
   imputar.use(express.urlencoded({ extended: true }));
 
-  const contextoImputar = (userId) => {
+  // La persona puede cargar en cualquier momento del día: elige entre hoy
+  // y el último día hábil (para el que contesta a la mañana siguiente)
+  const contextoImputar = (userId, fechaPedida) => {
     const user = db.getUser(userId);
-    const fecha = fechaDestino(userId);
+    const opciones = [...new Set([t.today(), t.haceDiasHabiles(1)])];
+    const fecha = opciones.includes(fechaPedida) ? fechaPedida : fechaDestino(userId);
     const trabajadas = db.horasDia(db.getDia(userId, fecha)) ?? user.carga_horaria;
-    return { user, fecha, trabajadas, existentes: db.getImputacionesDia(userId, fecha), proyectos: db.getProyectos(true) };
+    return { user, fecha, opciones, trabajadas, existentes: db.getImputacionesDia(userId, fecha), proyectos: db.getProyectos(true) };
   };
 
   imputar.get('/:token', (req, res) => {
     const userId = db.peekToken(req.params.token, 'imputar');
     if (!userId) { res.status(410).send(renderError(txt.web.linkInvalido, txt.imputar.webLinkInvalido)); return; }
-    res.send(renderImputar({ token: req.params.token, ...contextoImputar(userId), error: null }));
+    res.send(renderImputar({ token: req.params.token, ...contextoImputar(userId, req.query.fecha), error: null }));
   });
 
   imputar.post('/:token', (req, res) => {
@@ -121,7 +124,7 @@ const setupWeb = (receiver, slackClient = null) => {
       const userId = db.peekToken(req.params.token, 'imputar');
       if (!userId) { res.status(410).send(renderError(txt.web.linkInvalido, txt.imputar.webLinkInvalido)); return; }
 
-      const ctx = contextoImputar(userId);
+      const ctx = contextoImputar(userId, req.body.fecha);
       const proys = [].concat(req.body.proyecto || []);
       const cats = [].concat(req.body.categoria || []);
       const hrs = [].concat(req.body.horas || []);
@@ -277,11 +280,20 @@ const filaImputar = (proyectos, imp = null) => `
     </div>
   </div>`;
 
-const renderImputar = ({ token, user, fecha, trabajadas, existentes, proyectos, error }) => {
+const renderImputar = ({ token, user, fecha, opciones = [], trabajadas, existentes, proyectos, error }) => {
   // Prefill con lo ya imputado (editar reemplaza el día) o una fila vacía
   const filas = existentes.length
     ? existentes.map(i => filaImputar(proyectos, i)).join('')
     : filaImputar(proyectos);
+
+  const hoy = t.today();
+  const labelDia = (f) => `${f === hoy ? 'Hoy' : 'Último día hábil'} · ${t.fmtDate(f)}`;
+  const selectorDia = opciones.length > 1 ? `
+    <div style="display:flex;justify-content:center;margin-bottom:1rem">
+      <select onchange="location.href='/imputar/${token}?fecha='+this.value" style="background:var(--surface-2);border:1px solid var(--border);color:var(--text);padding:0.45rem 0.75rem;border-radius:6px;font-family:inherit;font-size:0.85rem">
+        ${opciones.map(f => `<option value="${f}"${f === fecha ? ' selected' : ''}>${labelDia(f)}</option>`).join('')}
+      </select>
+    </div>` : '';
 
   return miniLayout('Imputar horas', `
     <style>
@@ -299,10 +311,12 @@ const renderImputar = ({ token, user, fecha, trabajadas, existentes, proyectos, 
     </style>
     <div class="verify-card">
       <h2>${txt.imputar.webTitulo}</h2>
-      <p style="text-align:center;color:var(--text-muted);font-size:0.85rem;margin-bottom:1.25rem">${esc(user.nombre)} · ${t.fmtDate(fecha)}${trabajadas != null ? ` · ${trabajadas}hs de jornada` : ''}</p>
+      <p style="text-align:center;color:var(--text-muted);font-size:0.85rem;margin-bottom:0.75rem">${esc(user.nombre)}${trabajadas != null ? ` · ${trabajadas}hs de jornada` : ''}</p>
+      ${selectorDia}
       ${error ? `<p style="text-align:center;color:var(--red);font-size:0.85rem;margin-bottom:1rem">⚠️ ${esc(error)}</p>` : ''}
-      ${existentes.length ? '<p style="text-align:center;color:var(--yellow);font-size:0.8rem;margin-bottom:1rem">Ya tenías horas cargadas para este día — al guardar se reemplazan por lo que dejes acá.</p>' : ''}
+      ${existentes.length ? '<p style="text-align:center;color:var(--yellow);font-size:0.8rem;margin-bottom:1rem">Lo que ya cargaste está precargado — sumá filas y guardá; queda lo que dejes acá.</p>' : ''}
       <form method="POST" action="/imputar/${token}">
+        <input type="hidden" name="fecha" value="${fecha}">
         <div id="filas">${filas}</div>
         <button type="button" class="btn-agregar" onclick="agregarFila()">+ Agregar proyecto</button>
         <div id="total-linea"><span>Total</span><span><span id="total">0</span>hs${trabajadas != null ? ` / ${trabajadas}hs` : ''}</span></div>

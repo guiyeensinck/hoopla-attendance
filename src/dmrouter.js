@@ -24,7 +24,12 @@ const route = (raw) => {
   if (/^(mi semana|misemana|mis proyectos|mis horas|en que trabaje|en que estuve|que hice)\b/.test(texto)) {
     return { tipo: 'misemana' };
   }
-  if (/^(proyectos|imputar|imputaciones)$/.test(texto)) {
+  // Link directo al formulario web de horas — solo la palabra sola, así
+  // "cargo jumbo 3" sigue siendo imputación por texto
+  if (/^(imputar|cargar|cargo|cargue|termine|termino|cargar horas|mis horas de hoy)$/.test(texto)) {
+    return { tipo: 'imputarweb' };
+  }
+  if (/^(proyectos|imputaciones)$/.test(texto)) {
     return { tipo: 'proyectos' };
   }
   return { tipo: 'menu' };
