@@ -45,7 +45,7 @@ const setupDashboard = (receiver) => {
     const from = req.query.from || t.monthStart();
     const to = req.query.to || t.today();
     res.send(renderProyectos({
-      from, to,
+      from, to, err: req.query.err || null,
       clientes: db.horasPorCliente(from, to),
       proyectos: db.horasPorProyecto(from, to),
       detalle: db.horasProyectoPersona(from, to),
@@ -70,6 +70,22 @@ const setupDashboard = (receiver) => {
     const id = parseInt(req.body.id, 10);
     if (id) db.archivarProyecto(id);
     res.redirect('/dashboard/proyectos');
+  });
+
+  router.post('/proyectos/reactivar', (req, res) => {
+    const id = parseInt(req.body.id, 10);
+    if (id) db.reactivarProyecto(id);
+    res.redirect('/dashboard/proyectos');
+  });
+
+  // Edición inline de nombre/cliente (las horas imputadas siguen al proyecto)
+  router.post('/proyectos/editar', (req, res) => {
+    const id = parseInt(req.body.id, 10);
+    const nombre = (req.body.nombre || '').trim();
+    if (!id || !nombre) { res.redirect('/dashboard/proyectos'); return; }
+    const ok = db.editarProyecto(id, nombre, (req.body.cliente || '').trim() || null);
+    if (ok) console.log(`[dashboard] Proyecto ${id} editado → ${req.body.cliente || '—'} / ${nombre}`);
+    res.redirect(`/dashboard/proyectos${ok ? '' : '?err=duplicado'}`);
   });
 
   // ─── Actividad ────────────────────────────────────────────────────
@@ -156,19 +172,31 @@ const renderRegistros = ({ dias, users, from, to, selected }) => {
     </tr></thead><tbody>${dias.map(d => filaDia(d, true)).join('')}</tbody></table>` : '<p class="empty">No hay registros</p>'}</div>`);
 };
 
-const renderProyectos = ({ from, to, clientes, proyectos, detalle, categorias, activos, todos }) => {
+const renderProyectos = ({ from, to, err, clientes, proyectos, detalle, categorias, activos, todos }) => {
   const totalImputado = Math.round(clientes.reduce((s, c) => s + c.horas, 0) * 10) / 10;
 
-  // Catálogo completo (con o sin horas) + alta + archivar
+  // Catálogo completo, editable inline: cliente y nombre son inputs asociados
+  // al form de "Guardar" de su fila (atributo form=)
+  const btnMini = 'background:none;border:1px solid var(--border);color:var(--text-muted);padding:0.2rem 0.6rem;border-radius:4px;cursor:pointer;font-family:inherit;font-size:0.75rem';
+  const inpMini = 'background:var(--surface-2);border:1px solid var(--border);color:var(--text);padding:0.35rem 0.5rem;border-radius:4px;font-family:inherit;font-size:0.8rem;width:100%';
   const catalogoRows = todos.map(p => `
     <tr>
-      <td style="color:var(--text-muted)">${p.cliente || '—'}</td>
-      <td><strong>${p.nombre}</strong></td>
+      <td><input form="ed${p.id}" name="cliente" value="${p.cliente || ''}" placeholder="—" style="${inpMini}"></td>
+      <td><input form="ed${p.id}" name="nombre" value="${p.nombre}" required style="${inpMini};font-weight:600"></td>
       <td>${p.activo ? '<span class="badge tracked">Activo</span>' : '<span class="badge missing">Archivado</span>'}</td>
-      <td>${p.activo ? `<form method="POST" action="/dashboard/proyectos/archivar" style="display:inline" onsubmit="return confirm('¿Archivar ${p.nombre}? Las horas imputadas se conservan.')">
-        <input type="hidden" name="id" value="${p.id}">
-        <button type="submit" style="background:none;border:1px solid var(--border);color:var(--text-muted);padding:0.2rem 0.6rem;border-radius:4px;cursor:pointer;font-family:inherit;font-size:0.75rem">Archivar</button>
-      </form>` : '<span style="font-size:0.75rem;color:var(--text-muted)">Reactivar: crearlo de nuevo con el mismo nombre</span>'}</td>
+      <td style="white-space:nowrap">
+        <form id="ed${p.id}" method="POST" action="/dashboard/proyectos/editar" style="display:inline">
+          <input type="hidden" name="id" value="${p.id}">
+          <button type="submit" style="${btnMini}" title="Guardar cambios de nombre/cliente">💾 Guardar</button>
+        </form>
+        ${p.activo ? `<form method="POST" action="/dashboard/proyectos/archivar" style="display:inline" onsubmit="return confirm('¿Archivar ${p.nombre}? Las horas imputadas se conservan.')">
+          <input type="hidden" name="id" value="${p.id}">
+          <button type="submit" style="${btnMini}">Archivar</button>
+        </form>` : `<form method="POST" action="/dashboard/proyectos/reactivar" style="display:inline">
+          <input type="hidden" name="id" value="${p.id}">
+          <button type="submit" style="${btnMini};color:var(--green);border-color:var(--green)">Reactivar</button>
+        </form>`}
+      </td>
     </tr>`).join('');
 
   const formAlta = `
@@ -216,8 +244,10 @@ const renderProyectos = ({ from, to, clientes, proyectos, detalle, categorias, a
       <table><thead><tr><th>Categoría</th><th>Horas</th></tr></thead><tbody>${catRows}</tbody></table>
     </div>` : ''}
     <div class="card"><h3>📚 Catálogo (${activos.length} activos)</h3>
+      ${err === 'duplicado' ? '<p style="color:var(--red);font-size:0.85rem;margin-bottom:0.75rem">⚠️ Ya existe un proyecto con ese nombre — no guardé el cambio.</p>' : ''}
       ${formAlta}
       ${todos.length ? `<table><thead><tr><th>Cliente</th><th>Proyecto</th><th>Estado</th><th></th></tr></thead><tbody>${catalogoRows}</tbody></table>` : '<p class="empty">Sin proyectos — cargá el primero acá arriba o por DM con <code>admin proyecto agregar Cliente / Proyecto</code></p>'}
+      <p style="font-size:0.75rem;color:var(--text-muted);margin-top:0.75rem">Editá cliente o nombre directo en la tabla y tocá 💾 — las horas imputadas siguen al proyecto.</p>
     </div>`);
 };
 

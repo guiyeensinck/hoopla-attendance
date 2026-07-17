@@ -81,6 +81,10 @@ module.exports = {
     webGuardado: '✅ Horas guardadas',
     webLinkInvalido: 'Este link ya fue usado o venció (dura 30 minutos). Escribile *proyectos* al bot en Slack y pedile otro con el botón.',
     confirmacionWeb: (detalle) => `🗂️ Cargaste tus horas desde la web: ${detalle}`,
+    btnSemanaWeb: '📊 Mi semana en proyectos',
+    linkSemana: (url) => `Acá tenés tu resumen de proyectos de la semana (el link dura 30 min):\n👉 <${url}|Ver mi semana>`,
+    semanaTitulo: '📊 Tu semana en proyectos',
+    semanaLinkInvalido: 'Este link venció (dura 30 minutos). Escribile *mi semana* al bot en Slack y te manda uno nuevo.',
   },
 
   // ─── "horarios" ───────────────────────────────────────────────────

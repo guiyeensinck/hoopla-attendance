@@ -365,12 +365,12 @@ const diasEsperados = (userId, from, to) => {
 // TOKENS (persistidos — sobreviven redeploys)
 // ═══════════════════════════════════════════════════════════════════
 const TOKEN_TTL_MS = 5 * 60 * 1000;
-const TOKEN_TTL_IMPUTAR_MS = 30 * 60 * 1000; // el formulario de imputación lleva más tiempo
+const TOKEN_TTL_LARGO_MS = 30 * 60 * 1000; // formularios/vistas web llevan más tiempo
 
 const createToken = (userId, tipo = 'marcar') => {
   db.prepare('DELETE FROM tokens WHERE expira < ?').run(Date.now());
   const token = crypto.randomBytes(24).toString('hex');
-  const ttl = tipo === 'imputar' ? TOKEN_TTL_IMPUTAR_MS : TOKEN_TTL_MS;
+  const ttl = tipo === 'marcar' ? TOKEN_TTL_MS : TOKEN_TTL_LARGO_MS;
   db.prepare('INSERT INTO tokens (token, user_id, tipo, expira) VALUES (?, ?, ?, ?)').run(token, userId, tipo, Date.now() + ttl);
   return token;
 };
@@ -494,6 +494,15 @@ const crearProyecto = (nombre, cliente = null) => {
 };
 
 const archivarProyecto = (id) => db.prepare('UPDATE proyectos SET activo = 0 WHERE id = ?').run(id);
+const reactivarProyecto = (id) => db.prepare('UPDATE proyectos SET activo = 1 WHERE id = ?').run(id);
+
+/** Edita nombre/cliente conservando las horas (falla si el nombre nuevo ya existe) */
+const editarProyecto = (id, nombre, cliente) => {
+  try {
+    db.prepare('UPDATE proyectos SET nombre = ?, cliente = ? WHERE id = ?').run(nombre, cliente || null, id);
+    return true;
+  } catch (_) { return false; } // UNIQUE(nombre) violado
+};
 const getProyectos = (soloActivos = true) =>
   db.prepare(`SELECT * FROM proyectos ${soloActivos ? 'WHERE activo = 1' : ''} ORDER BY nombre`).all();
 
@@ -538,7 +547,7 @@ const horasProyectoPersona = (from, to) => db.prepare(`
 
 /** Imputaciones de una persona en un rango, agrupadas por proyecto */
 const horasUsuarioPorProyecto = (userId, from, to) => db.prepare(`
-  SELECT p.nombre, ROUND(SUM(i.horas), 1) as horas
+  SELECT p.nombre, p.cliente, ROUND(SUM(i.horas), 1) as horas
   FROM imputaciones i JOIN proyectos p ON p.id = i.proyecto_id
   WHERE i.user_id = ? AND i.fecha BETWEEN ? AND ? GROUP BY p.id ORDER BY horas DESC`).all(userId, from, to);
 
@@ -609,7 +618,7 @@ module.exports = {
   getCierre, setCierre,
   logPresencia, presenciaSummary, presenciaPorDia, ultimaActividad,
   addPingModo, getPingModoActivo, getPingModosEnRango, createPing, respondPing, expirarPings, pingsHoyCount, pingSummary,
-  crearProyecto, archivarProyecto, getProyectos, setImputaciones, getImputacionesDia, hayImputaciones,
+  crearProyecto, archivarProyecto, reactivarProyecto, editarProyecto, getProyectos, setImputaciones, getImputacionesDia, hayImputaciones,
   horasPorProyecto, horasPorCliente, horasPorCategoria, horasProyectoPersona, horasUsuarioPorProyecto, getImputacionesRange,
   logIntentoMobile, getIntentosMobile, avisoEnviado, marcarAviso,
   faltantes, resumenPersonas,

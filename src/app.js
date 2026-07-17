@@ -192,6 +192,7 @@ app.message(async ({ message, say, client }) => {
     if (r.tipo === 'marcar') { await enviarLink(user, say); return; }
     if (r.tipo === 'horarios') { await say({ text: 'Tu estado', blocks: resumenBlocks(user) }); return; }
     if (r.tipo === 'proyectos') { await say(vistaProyectos(user)); return; }
+    if (r.tipo === 'misemana') { await enviarSemanaWeb(user, say); return; }
 
     // ¿Es una imputación de horas a proyectos? ("Nike 4, Interno 2")
     const imputacion = procesarImputacion(user, message.text);
@@ -226,6 +227,18 @@ app.action('imputar_web', async ({ body, ack, client }) => {
   if (!user?.trackeado) return;
   const url = `${getBaseUrl()}/imputar/${db.createToken(user.slack_id, 'imputar')}`;
   await sayEnDM(client, user.slack_id)(txt.imputar.linkWeb(url));
+});
+
+// "Mi semana en proyectos" — link a la vista web personal
+const enviarSemanaWeb = async (user, say) => {
+  const url = `${getBaseUrl()}/misemana/${db.createToken(user.slack_id, 'semana')}`;
+  await say(txt.imputar.linkSemana(url));
+};
+
+app.action('semana_web', async ({ body, ack, client }) => {
+  await ack();
+  const user = db.getUser(body.user.id);
+  if (user?.trackeado) await enviarSemanaWeb(user, sayEnDM(client, user.slack_id));
 });
 
 // ═══════════════════════════════════════════════════════════════════

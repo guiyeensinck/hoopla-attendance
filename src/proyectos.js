@@ -306,7 +306,10 @@ const procesarImputacion = (user, texto) => {
 
 const btnImputarWeb = () => ({
   type: 'actions',
-  elements: [{ type: 'button', action_id: 'imputar_web', text: { type: 'plain_text', text: txt.imputar.btnWeb } }],
+  elements: [
+    { type: 'button', action_id: 'imputar_web', text: { type: 'plain_text', text: txt.imputar.btnWeb } },
+    { type: 'button', action_id: 'semana_web', text: { type: 'plain_text', text: txt.imputar.btnSemanaWeb } },
+  ],
 });
 
 /** Resumen de proyectos para una persona ("proyectos" por DM) */

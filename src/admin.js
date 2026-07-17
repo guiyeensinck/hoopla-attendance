@@ -25,7 +25,7 @@ const USO = `⚙️ *Gestión de asistencia* — escribime \`admin ...\` acá en
 
 *Proyectos (time tracking)*
 \`admin proyecto agregar Cliente / Proyecto\` — sin \`/\` queda sin cliente (ej. Interno)
-\`admin proyecto sacar Nombre\` · \`admin proyectos\` (agrupado por cliente)
+\`admin proyecto sacar Nombre\` · \`admin proyectos\` (agrupado por cliente + link a la gestión web)
 \`admin reporte proyectos [semana|mes]\` — horas por cliente → proyecto → persona
 
 *Novedades*
@@ -231,7 +231,8 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
             const subtotal = Math.round(grupos[cli].reduce((s, p) => s + (horas.find(x => x.nombre === p.nombre)?.horas || 0), 0) * 10) / 10;
             return `*${cli}*${subtotal ? ` — ${subtotal}hs este mes` : ''}\n${lineas.join('\n')}`;
           });
-          await say(`🗂️ *Proyectos activos:*\n${bloques.join('\n')}`);
+          const urlGestion = process.env.APP_URL ? `\n\n🖥️ Gestión web (alta, edición, archivo): <${process.env.APP_URL}/dashboard/proyectos|abrir dashboard> _(la contraseña es la variable DASHBOARD_TOKEN de Railway, con cualquier usuario)_` : '';
+          await say(`🗂️ *Proyectos activos:*\n${bloques.join('\n')}${urlGestion}`);
           break;
         }
 

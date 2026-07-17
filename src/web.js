@@ -154,8 +154,27 @@ const setupWeb = (receiver, slackClient = null) => {
   });
 
   receiver.app.use('/imputar', imputar);
+
+  // ─── "Mi semana en proyectos" (vista personal, solo lectura) ──────
+  // No se consume al mirar: se puede refrescar hasta que expire (30 min).
+  receiver.app.get('/misemana/:token', (req, res) => {
+    const userId = db.peekToken(req.params.token, 'semana');
+    if (!userId) { res.status(410).send(renderError(txt.web.linkInvalido, txt.imputar.semanaLinkInvalido)); return; }
+    const user = db.getUser(userId);
+    const dias = fechasDesde(t.weekStart()).map(fecha => ({
+      fecha,
+      imputado: db.getImputacionesDia(userId, fecha),
+      trabajadas: db.horasDia(db.getDia(userId, fecha)),
+    }));
+    res.send(renderMiSemana({
+      user, dias,
+      semana: db.horasUsuarioPorProyecto(userId, t.weekStart(), t.today()),
+      mes: db.horasUsuarioPorProyecto(userId, t.monthStart(), t.today()),
+    }));
+  });
+
   receiver.app.get('/health', (_req, res) => res.json({ ok: true, ts: t.now().format() }));
-  console.log('[web] Rutas /verify/:token, /imputar/:token y /health listas');
+  console.log('[web] Rutas /verify/:token, /imputar/:token, /misemana/:token y /health listas');
 };
 
 // ─── Renders ────────────────────────────────────────────────────────
@@ -333,6 +352,81 @@ const renderImputarOk = ({ user, fecha, trabajadas, finales }) => {
       </div>
     </div>
     <p style="text-align:center;font-size:0.8rem;color:var(--text-muted);margin-top:1rem">Te dejé la confirmación por DM. Si querés corregir, pedile otro link al bot (escribile <em>proyectos</em>).</p>`);
+};
+
+// ─── "Mi semana en proyectos" ───────────────────────────────────────
+
+/** Fechas desde `desde` hasta hoy inclusive (ISO, sin líos de timezone) */
+const fechasDesde = (desde) => {
+  const out = [];
+  const pad = (n) => String(n).padStart(2, '0');
+  const d = new Date(`${desde}T12:00:00`);
+  const hoy = t.today();
+  for (;;) {
+    const iso = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    if (iso > hoy) break;
+    out.push(iso);
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
+};
+
+const nombreDia = (iso) => {
+  const s = new Date(`${iso}T12:00:00`).toLocaleDateString('es-AR', { weekday: 'long' });
+  return s.charAt(0).toUpperCase() + s.slice(1);
+};
+
+const renderMiSemana = ({ user, dias, semana, mes }) => {
+  const finde = (iso) => [0, 6].includes(new Date(`${iso}T12:00:00`).getDay());
+
+  const bloquesDias = dias.filter(d => d.imputado.length || !finde(d.fecha)).map(d => {
+    const total = Math.round(d.imputado.reduce((s, i) => s + i.horas, 0) * 10) / 10;
+    const filas = d.imputado.map(i => `
+      <div class="status-row"><span>${esc(i.nombre)}${i.categoria ? ` <span style="color:var(--text-muted)">(${esc(i.categoria)})</span>` : ''}</span><span>${i.horas}hs</span></div>`).join('');
+    const resumen = d.imputado.length
+      ? `${total}hs imputadas${d.trabajadas != null ? ` · ${d.trabajadas}hs trabajadas` : ''}`
+      : '<span style="color:var(--text-muted)">sin imputar</span>';
+    return `
+    <div class="verify-card" style="margin-top:0.75rem;padding:1.25rem">
+      <div style="display:flex;justify-content:space-between;font-size:0.85rem;margin-bottom:${d.imputado.length ? '0.5rem' : '0'}">
+        <strong>${nombreDia(d.fecha)} ${t.fmtDate(d.fecha).slice(0, 5)}</strong>
+        <span>${resumen}</span>
+      </div>
+      ${filas}
+    </div>`;
+  }).join('');
+
+  const rollup = (items) => {
+    const total = Math.round(items.reduce((s, i) => s + i.horas, 0) * 10) / 10;
+    const max = Math.max(...items.map(i => i.horas), 1);
+    const filas = items.map(i => `
+      <div style="margin-bottom:0.5rem">
+        <div style="display:flex;justify-content:space-between;font-size:0.85rem">
+          <span>${esc(i.nombre)}${i.cliente && i.cliente !== i.nombre ? ` <span style="color:var(--text-muted);font-size:0.75rem">${esc(i.cliente)}</span>` : ''}</span>
+          <span style="font-weight:600">${i.horas}hs</span>
+        </div>
+        <div class="progress"><div class="progress-bar green" style="width:${Math.round((i.horas / max) * 100)}%"></div></div>
+      </div>`).join('');
+    return { filas, total };
+  };
+  const rSemana = rollup(semana);
+  const rMes = rollup(mes);
+
+  return miniLayout('Mi semana', `
+    <div class="verify-card">
+      <h2>${txt.imputar.semanaTitulo}</h2>
+      <p style="text-align:center;color:var(--text-muted);font-size:0.85rem">${esc(user.nombre)} · semana del ${t.fmtDate(t.weekStart())}</p>
+    </div>
+    ${bloquesDias}
+    <div class="verify-card" style="margin-top:1rem">
+      <h3 style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:0.75rem">Totales de la semana — ${rSemana.total}hs</h3>
+      ${rSemana.filas || '<p style="color:var(--text-muted);font-size:0.85rem">Todavía no imputaste nada esta semana.</p>'}
+    </div>
+    <div class="verify-card" style="margin-top:1rem">
+      <h3 style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:0.75rem">Tu mes — ${rMes.total}hs</h3>
+      ${rMes.filas || '<p style="color:var(--text-muted);font-size:0.85rem">Sin horas este mes.</p>'}
+    </div>
+    <p style="text-align:center;font-size:0.8rem;color:var(--text-muted);margin-top:1rem">Para cargar o corregir un día, escribile al bot (<em>proyectos</em>) o pedile el formulario con el botón.</p>`);
 };
 
 module.exports = { setupWeb };

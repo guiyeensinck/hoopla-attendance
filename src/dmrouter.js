@@ -21,6 +21,9 @@ const route = (raw) => {
   if (/^(horarios?|estado|semana|balance|resumen|como voy|cuanto llevo)\b/.test(texto)) {
     return { tipo: 'horarios' };
   }
+  if (/^(mi semana|misemana|mis proyectos|mis horas|en que trabaje|en que estuve|que hice)\b/.test(texto)) {
+    return { tipo: 'misemana' };
+  }
   if (/^(proyectos|imputar|imputaciones)$/.test(texto)) {
     return { tipo: 'proyectos' };
   }
