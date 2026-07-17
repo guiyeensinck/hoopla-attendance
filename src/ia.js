@@ -8,11 +8,13 @@ const { semanaUsuario, saldoMes } = require('./balance');
  * usando el contexto real de la persona (marcaciones, horas, saldo,
  * imputaciones). Solo lectura: para modificar algo, guía al comando.
  *
- * Se activa seteando ANTHROPIC_API_KEY. Sin la variable (o si la API
+ * Se activa seteando ANTHROPIC_API_KEY (Claude) u OPENAI_API_KEY
+ * (ChatGPT) — si están las dos, gana Claude. Sin variable (o si la API
  * falla), se cae al menú de siempre — nunca rompe el flujo.
  */
 
-const MODEL = () => process.env.IA_MODEL || 'claude-haiku-4-5-20251001';
+const MODEL_ANTHROPIC = () => process.env.IA_MODEL || 'claude-haiku-4-5-20251001';
+const MODEL_OPENAI = () => process.env.IA_MODEL || 'gpt-4o-mini';
 
 const resumenDia = (user, fecha) => {
   const dia = db.getDia(user.slack_id, fecha);
@@ -84,12 +86,38 @@ const historial = async (client, channel, limite = 6) => {
  * Devuelve la respuesta conversacional, o null si el modo está apagado
  * o la API falló (el caller cae al menú).
  */
+const llamarAnthropic = async (key, system, messages, signal) => {
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST', signal,
+    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: MODEL_ANTHROPIC(), max_tokens: 400, system, messages }),
+  });
+  if (!r.ok) { console.error('[ia] Anthropic', r.status, (await r.text()).slice(0, 200)); return null; }
+  const j = await r.json();
+  return (j.content || []).filter(c => c.type === 'text').map(c => c.text).join('').trim() || null;
+};
+
+const llamarOpenAI = async (key, system, messages, signal) => {
+  const r = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST', signal,
+    headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: MODEL_OPENAI(), max_completion_tokens: 400,
+      messages: [{ role: 'system', content: system }, ...messages],
+    }),
+  });
+  if (!r.ok) { console.error('[ia] OpenAI', r.status, (await r.text()).slice(0, 200)); return null; }
+  const j = await r.json();
+  return (j.choices?.[0]?.message?.content || '').trim() || null;
+};
+
 const responderIA = async (user, texto, { client, channel } = {}) => {
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) return null;
+  const keyAnthropic = process.env.ANTHROPIC_API_KEY;
+  const keyOpenAI = process.env.OPENAI_API_KEY;
+  if (!keyAnthropic && !keyOpenAI) return null;
   try {
     const previos = client && channel ? await historial(client, channel) : [];
-    // Anthropic exige alternancia — colapsamos roles repetidos
+    // Anthropic exige alternancia — colapsamos roles repetidos (a OpenAI no le molesta)
     const messages = [];
     for (const m of [...previos, { role: 'user', content: texto.slice(0, 600) }]) {
       const ult = messages[messages.length - 1];
@@ -98,19 +126,14 @@ const responderIA = async (user, texto, { client, channel } = {}) => {
     }
     if (messages[0]?.role !== 'user') messages.shift();
 
+    const system = SYSTEM(construirContexto(user));
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 15000);
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      signal: ctrl.signal,
-      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model: MODEL(), max_tokens: 400, system: SYSTEM(construirContexto(user)), messages }),
-    });
+    const respuesta = keyAnthropic
+      ? await llamarAnthropic(keyAnthropic, system, messages, ctrl.signal)
+      : await llamarOpenAI(keyOpenAI, system, messages, ctrl.signal);
     clearTimeout(timer);
-    if (!r.ok) { console.error('[ia] API', r.status, (await r.text()).slice(0, 200)); return null; }
-    const j = await r.json();
-    const respuesta = (j.content || []).filter(c => c.type === 'text').map(c => c.text).join('').trim();
-    return respuesta || null;
+    return respuesta;
   } catch (e) {
     console.error('[ia] Error:', e.message);
     return null;
