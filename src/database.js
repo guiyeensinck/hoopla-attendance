@@ -202,7 +202,7 @@ db.exec('UPDATE registros SET tarde_min = 0 WHERE tarde_min > 0 AND tarde_min <=
 db.exec('UPDATE registros SET anticipado_min = 0 WHERE anticipado_min > 0 AND anticipado_min <= 10');
 
 const TIPOS_ORDEN = ['entrada', 'almuerzo_inicio', 'almuerzo_fin', 'salida'];
-const NOVEDADES_EXENTAS = ['feriado', 'vacaciones', 'medico', 'ausente', 'libre'];
+const NOVEDADES_EXENTAS = ['feriado', 'vacaciones', 'medico', 'ausente', 'libre', 'licencia'];
 
 // ═══════════════════════════════════════════════════════════════════
 // USERS
@@ -350,7 +350,8 @@ const borrarNovedad = (id) => db.prepare('DELETE FROM novedades WHERE id = ?').r
  * Dedupe por (user, fecha, tipo). Devuelve las fechas cargadas.
  */
 const cargarNovedadRango = (userId, tipo, desde, dias, { motivo, creadoPor, justificada = null } = {}) => {
-  const corridos = tipo === 'vacaciones';
+  // Vacaciones y licencias (maternidad, sin goce) se cuentan corridas
+  const corridos = tipo === 'vacaciones' || tipo === 'licencia';
   const fechas = [];
   let d = t.dayjs(desde);
   while (fechas.length < dias) {

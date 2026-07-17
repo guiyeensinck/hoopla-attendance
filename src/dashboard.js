@@ -65,7 +65,7 @@ const setupDashboard = (receiver) => {
   router.post('/ausencias/nueva', (req, res) => {
     const { user_id, tipo, desde, motivo } = req.body;
     const dias = Math.max(1, parseInt(req.body.dias, 10) || 1);
-    const TIPOS_OK = ['vacaciones', 'ausente', 'medico', 'libre', 'salida', 'remoto'];
+    const TIPOS_OK = ['vacaciones', 'ausente', 'medico', 'libre', 'salida', 'remoto', 'licencia'];
     if (!user_id || !TIPOS_OK.includes(tipo) || !t.isValidDate(desde) || dias > 60) {
       res.redirect('/dashboard/ausencias?msg=datos'); return;
     }
@@ -397,6 +397,7 @@ const renderAusencias = ({ users, novedades, vacaciones, msg }) => {
         <option value="ausente">❌ Ausencia</option>
         <option value="medico">🏥 Turno médico</option>
         <option value="libre">📅 Día libre</option>
+        <option value="licencia">📋 Licencia (maternidad / sin goce / especial)</option>
         <option value="salida">🕐 Salida autorizada</option>
         <option value="remoto">📱 Fichaje remoto</option>
       </select></div>
@@ -406,7 +407,7 @@ const renderAusencias = ({ users, novedades, vacaciones, msg }) => {
       <div><label>Motivo (opcional)</label><input type="text" name="motivo" placeholder=""></div>
       <button type="submit">➕ Cargar</button>
     </form>
-    <p style="font-size:0.7rem;color:var(--text-muted);margin-bottom:1rem">Vacaciones: días <strong>corridos</strong> (cuentan findes) y arrancan lunes. El resto se carga por día hábil.</p>`;
+    <p style="font-size:0.7rem;color:var(--text-muted);margin-bottom:1rem">Vacaciones y licencias: días <strong>corridos</strong> (cuentan findes); las vacaciones arrancan lunes. El resto se carga por día hábil. Las licencias no descuentan vacaciones.</p>`;
 
   const badgeJust = (n) => n.tipo !== 'ausente' ? '' :
     n.justificada === 0 ? ' <span class="badge missing">Injustificada</span>' : ' <span class="badge tracked">Justificada</span>';

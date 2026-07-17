@@ -18,6 +18,7 @@ const NOVEDADES = {
   libre:      '📅 Día libre',
   salida:     '🕐 Salida autorizada',
   remoto:     '📱 Fichaje remoto',
+  licencia:   '📋 Licencia',
 };
 
 module.exports = {
