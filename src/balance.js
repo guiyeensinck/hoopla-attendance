@@ -23,7 +23,7 @@ const saldoMes = (user) => {
   const hoy = t.today();
   const dias = db.getDias(desde, hoy, user.slack_id);
   const trabajadas = dias.reduce((s, d) => s + (d.horas || 0), 0) + parcialHoy(user);
-  const esperadas = db.diasEsperados(user.slack_id, desde, hoy) * user.carga_horaria;
+  const esperadas = db.horasEsperadas(user, desde, hoy);
   return {
     trabajadas: Math.round(trabajadas * 10) / 10,
     esperadas: Math.round(esperadas * 10) / 10,
@@ -39,7 +39,6 @@ const saldoMes = (user) => {
 const semanaUsuario = (user) => {
   const desde = t.weekStart();
   const hoy = t.today();
-  const carga = user.carga_horaria;
 
   const dias = [];
   let trabajadas = 0;
@@ -53,6 +52,7 @@ const semanaUsuario = (user) => {
       const horas = db.horasDia(dia);
       const exento = db.isExento(user.slack_id, fecha);
       const esHoy = fecha === hoy;
+      const carga = db.horarioDia(user, fecha).carga_horaria;
       const enCurso = esHoy && dia.entrada && !dia.salida;
 
       let semaforo, detalle;
@@ -85,7 +85,7 @@ const semanaUsuario = (user) => {
   const parcial = parcialHoy(user);
 
   trabajadas = Math.round(trabajadas * 100) / 100;
-  const esperadas = Math.round(db.diasEsperados(user.slack_id, desde, hoy) * carga * 100) / 100;
+  const esperadas = db.horasEsperadas(user, desde, hoy);
   const diff = Math.round((trabajadas + parcial - esperadas) * 100) / 100;
 
   // Si va atrás y la jornada sigue abierta, ¿hasta qué hora quedarse hoy?

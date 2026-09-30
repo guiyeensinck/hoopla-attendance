@@ -196,6 +196,36 @@ try { db.exec("ALTER TABLE tokens ADD COLUMN tipo TEXT DEFAULT 'marcar'"); } cat
 try { db.exec('ALTER TABLE users ADD COLUMN vacaciones_anuales REAL DEFAULT 21'); } catch (_) { /* ya existe */ }
 // Migración: ausencias justificadas o no (NULL = no aplica)
 try { db.exec('ALTER TABLE novedades ADD COLUMN justificada INTEGER'); } catch (_) { /* ya existe */ }
+// Migración: cierre con "¿terminaste?" — hora de la última pregunta y de la última respuesta "sigo"
+try { db.exec('ALTER TABLE cierres ADD COLUMN pregunta_hora TEXT'); } catch (_) { /* ya existe */ }
+try { db.exec('ALTER TABLE cierres ADD COLUMN ultima_respuesta TEXT'); } catch (_) { /* ya existe */ }
+// Migración: la presencia se registra también fuera de horario — en_horario
+// separa los checks que cuentan para el % de presencia (los viejos eran todos en horario)
+try { db.exec('ALTER TABLE presencia ADD COLUMN en_horario INTEGER DEFAULT 1'); } catch (_) { /* ya existe */ }
+db.exec(`
+  -- Actividad real en Slack (solo la hora, nunca el contenido): mensajes y
+  -- reacciones en canales donde está el bot. Los DMs con el bot no cuentan.
+  CREATE TABLE IF NOT EXISTS actividad (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id  TEXT NOT NULL,
+    fecha    TEXT NOT NULL,
+    hora     TEXT NOT NULL,   -- HH:MM
+    tipo     TEXT NOT NULL    -- mensaje | reaccion
+  );
+  CREATE INDEX IF NOT EXISTS idx_actividad ON actividad(user_id, fecha);
+
+  -- Reclamos sobre un cierre automático ("estaba en una reunión"): los aprueba un admin
+  CREATE TABLE IF NOT EXISTS reclamos (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      TEXT NOT NULL,
+    fecha        TEXT NOT NULL,
+    hora_pedida  TEXT NOT NULL,
+    motivo       TEXT,
+    estado       TEXT DEFAULT 'pendiente',   -- pendiente | aprobado | rechazado
+    resuelto_por TEXT,
+    created_at   TEXT DEFAULT (datetime('now'))
+  );
+`);
 // Migración de datos: la tolerancia de 10 minutos aplica también a los
 // registros históricos (idempotente — corre en cada arranque sin efecto)
 db.exec('UPDATE registros SET tarde_min = 0 WHERE tarde_min > 0 AND tarde_min <= 10');
@@ -203,6 +233,18 @@ db.exec('UPDATE registros SET anticipado_min = 0 WHERE anticipado_min > 0 AND an
 
 const TIPOS_ORDEN = ['entrada', 'almuerzo_inicio', 'almuerzo_fin', 'salida'];
 const NOVEDADES_EXENTAS = ['feriado', 'vacaciones', 'medico', 'ausente', 'libre', 'licencia'];
+
+// Los viernes todos salen a las 17:30 (quien sale antes mantiene su horario)
+// y se esperan menos horas en proporción.
+const SALIDA_VIERNES = '17:30';
+
+/** Horario efectivo de una persona en una fecha (aplica el viernes corto) */
+const horarioDia = (user, fecha) => {
+  if (!user || t.dayjs(fecha).day() !== 5) return user;
+  const menos = t.toMin(user.hora_salida) - t.toMin(SALIDA_VIERNES);
+  if (menos <= 0) return user;
+  return { ...user, hora_salida: SALIDA_VIERNES, carga_horaria: Math.max(0, Math.round((user.carga_horaria - menos / 60) * 100) / 100) };
+};
 
 // ═══════════════════════════════════════════════════════════════════
 // USERS
@@ -262,6 +304,7 @@ const horasDia = (dia) => {
 const TOLERANCIA_MIN = 10;
 
 const registrar = (user, fecha, tipo, hora, origen, extra = {}) => {
+  user = horarioDia(user, fecha);
   let tarde = 0, anticipado = 0;
   if (tipo === 'entrada') {
     tarde = Math.max(0, t.toMin(hora) - t.toMin(user.hora_entrada));
@@ -287,20 +330,6 @@ const imputarAlmuerzo = (user, fecha) => {
     const fin = t.toHHMM(t.toMin(dia.almuerzo_inicio.hora) + 60);
     registrar(user, fecha, 'almuerzo_fin', fin, 'auto', { nota: 'imputado' });
   }
-};
-
-/**
- * Corrige una salida auto-cerrada (una sola vez). El valor original queda loggeado.
- * Devuelve false si no es corregible (salida manual o ya corregida).
- */
-const corregirSalida = (user, fecha, nuevaHora) => {
-  const dia = getDia(user.slack_id, fecha);
-  const s = dia.salida;
-  if (!s || !s.auto_closed || s.corregido) return false;
-  const anticipado = Math.max(0, t.toMin(user.hora_salida) - t.toMin(nuevaHora));
-  db.prepare(`UPDATE registros SET valor_original = hora, hora = ?, corregido = 1, anticipado_min = ? WHERE id = ?`)
-    .run(nuevaHora, anticipado, s.id);
-  return true;
 };
 
 /** Días pivotados (una fila por persona/fecha) para reportes y dashboard */
@@ -472,7 +501,7 @@ const evaluacionUsuario = (user, from, to) => {
       continue;
     }
     r.esperados++;
-    r.horasEsperadas += user.carga_horaria;
+    r.horasEsperadas += horarioDia(user, ds).carga_horaria;
     const dia = getDia(user.slack_id, ds);
     if (!dia.entrada) { r.sinAviso++; continue; }
     r.presentes++;
@@ -508,6 +537,19 @@ const diasEsperados = (userId, from, to) => {
     d = d.add(1, 'day');
   }
   return count;
+};
+
+/** Horas esperadas de una persona en un rango (días esperados × carga de cada día, viernes corto incluido) */
+const horasEsperadas = (user, from, to) => {
+  let total = 0;
+  let d = t.dayjs(from);
+  const end = t.dayjs(to);
+  while (d.isBefore(end) || d.isSame(end, 'day')) {
+    const ds = d.format('YYYY-MM-DD');
+    if (t.isWeekday(ds) && !isExento(user.slack_id, ds)) total += horarioDia(user, ds).carga_horaria;
+    d = d.add(1, 'day');
+  }
+  return Math.round(total * 100) / 100;
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -547,31 +589,71 @@ const getCierre = (userId, fecha) =>
 
 const setCierre = (userId, fecha, fields) => {
   const cur = getCierre(userId, fecha) || {};
-  const merged = { estado: null, dm_hora: null, ...cur, ...fields };
-  db.prepare(`INSERT INTO cierres (user_id, fecha, estado, dm_hora) VALUES (?, ?, ?, ?)
-    ON CONFLICT(user_id, fecha) DO UPDATE SET estado = excluded.estado, dm_hora = excluded.dm_hora`)
-    .run(userId, fecha, merged.estado, merged.dm_hora);
+  const m = { estado: null, dm_hora: null, pregunta_hora: null, ultima_respuesta: null, ...cur, ...fields };
+  db.prepare(`INSERT INTO cierres (user_id, fecha, estado, dm_hora, pregunta_hora, ultima_respuesta) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, fecha) DO UPDATE SET estado = excluded.estado, dm_hora = excluded.dm_hora,
+      pregunta_hora = excluded.pregunta_hora, ultima_respuesta = excluded.ultima_respuesta`)
+    .run(userId, fecha, m.estado, m.dm_hora, m.pregunta_hora, m.ultima_respuesta);
 };
 
 // ═══════════════════════════════════════════════════════════════════
 // PRESENCIA
 // ═══════════════════════════════════════════════════════════════════
-const logPresencia = (userId, fecha, hora, status) =>
-  db.prepare('INSERT INTO presencia (user_id, fecha, hora, status) VALUES (?, ?, ?, ?)').run(userId, fecha, hora, status);
+const logPresencia = (userId, fecha, hora, status, enHorario = true) =>
+  db.prepare('INSERT INTO presencia (user_id, fecha, hora, status, en_horario) VALUES (?, ?, ?, ?, ?)')
+    .run(userId, fecha, hora, status, enHorario ? 1 : 0);
+
+const logActividad = (userId, fecha, hora, tipo) =>
+  db.prepare('INSERT INTO actividad (user_id, fecha, hora, tipo) VALUES (?, ?, ?, ?)').run(userId, fecha, hora, tipo);
 
 /**
- * Última señal de actividad real del día: el último check de presencia
- * "active" o la última marcación hecha por la persona, lo más tarde.
- * Devuelve null si no hubo chequeos de presencia ese día (sin datos no
- * se opina — el auto-cierre cae al horario personal).
+ * Última actividad en SLACK del día (no con el bot): último check de
+ * presencia "active" o último mensaje/reacción en canales, lo más tarde,
+ * hasta la hora `hasta` inclusive. Las marcaciones y los botones del bot
+ * no cuentan. Devuelve null si no hay ninguna señal ese día.
  */
-const ultimaActividad = (userId, fecha) => {
-  const chequeos = db.prepare('SELECT COUNT(*) c FROM presencia WHERE user_id = ? AND fecha = ?').get(userId, fecha)?.c || 0;
-  if (!chequeos) return null;
-  const pres = db.prepare("SELECT MAX(hora) h FROM presencia WHERE user_id = ? AND fecha = ? AND status = 'active'").get(userId, fecha)?.h;
-  const reg = db.prepare("SELECT MAX(hora) h FROM registros WHERE user_id = ? AND fecha = ? AND origen != 'auto'").get(userId, fecha)?.h;
-  const candidatos = [pres, reg].filter(Boolean);
-  return candidatos.length ? candidatos.sort().pop() : null; // HH:MM ordena lexicográfico
+const ultimaActividadSlack = (userId, fecha, hasta = '23:59') => {
+  const pres = db.prepare("SELECT MAX(hora) h FROM presencia WHERE user_id = ? AND fecha = ? AND status = 'active' AND hora <= ?").get(userId, fecha, hasta)?.h;
+  const act = db.prepare('SELECT MAX(hora) h FROM actividad WHERE user_id = ? AND fecha = ? AND hora <= ?').get(userId, fecha, hasta)?.h;
+  const c = [pres, act].filter(Boolean).sort();
+  return c.length ? c.pop() : null; // HH:MM ordena lexicográfico
+};
+
+/**
+ * A qué hora se auto-cierra un día: la última actividad en Slack sin pasar
+ * de la última pregunta sin respuesta (tope); si dijo "sigo trabajando",
+ * su última respuesta es el piso. Sin ninguna señal, su horario de salida.
+ * Nunca antes de la entrada. `user` ya viene con el horario del día.
+ */
+const horaAutoCierre = (user, fecha, cierre) => {
+  const tope = cierre.pregunta_hora || cierre.dm_hora || user.hora_salida;
+  const piso = cierre.ultima_respuesta || null;
+  const actividad = ultimaActividadSlack(user.slack_id, fecha, tope);
+  let hora, motivo;
+  if (actividad && (!piso || actividad > piso)) { hora = actividad; motivo = 'actividad'; }
+  else if (piso) { hora = piso; motivo = 'respuesta'; }
+  else { hora = user.hora_salida; motivo = 'sin_datos'; }
+  const entrada = getDia(user.slack_id, fecha).entrada?.hora;
+  if (entrada && hora < entrada) { hora = entrada; motivo = 'actividad'; }
+  return { hora, motivo };
+};
+
+/** Actividad Slack de un día: primera/última señal y tramos activos */
+const actividadDia = (userId, fecha) => {
+  const pres = db.prepare('SELECT hora, status FROM presencia WHERE user_id = ? AND fecha = ? ORDER BY hora').all(userId, fecha);
+  const acts = db.prepare('SELECT hora, tipo FROM actividad WHERE user_id = ? AND fecha = ? ORDER BY hora').all(userId, fecha);
+  const activos = [...pres.filter(p => p.status === 'active').map(p => p.hora), ...acts.map(a => a.hora)].sort();
+  // Señales separadas por ≤ 15' se unen en un mismo tramo
+  const tramos = [];
+  for (const h of activos) {
+    const last = tramos[tramos.length - 1];
+    if (last && t.toMin(h) - t.toMin(last.hasta) <= 15) last.hasta = h;
+    else tramos.push({ desde: h, hasta: h });
+  }
+  return {
+    primera: activos[0] || null, ultima: activos[activos.length - 1] || null, tramos,
+    checks: pres.length, mensajes: acts.filter(a => a.tipo === 'mensaje').length, reacciones: acts.filter(a => a.tipo === 'reaccion').length,
+  };
 };
 
 const presenciaSummary = (from, to) => db.prepare(`
@@ -579,14 +661,14 @@ const presenciaSummary = (from, to) => db.prepare(`
     SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as activos,
     ROUND(100.0 * SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) / COUNT(*), 1) as pct
   FROM presencia p JOIN users u ON u.slack_id = p.user_id
-  WHERE p.fecha BETWEEN ? AND ? GROUP BY p.user_id ORDER BY u.nombre`).all(from, to);
+  WHERE p.fecha BETWEEN ? AND ? AND p.en_horario = 1 GROUP BY p.user_id ORDER BY u.nombre`).all(from, to);
 
 /** % de presencia activa por día de una persona (para detección de patrones) */
 const presenciaPorDia = (userId, from, to) => db.prepare(`
   SELECT fecha, COUNT(*) as checks,
     SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as activos,
     ROUND(100.0 * SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) / COUNT(*), 1) as pct
-  FROM presencia WHERE user_id = ? AND fecha BETWEEN ? AND ? GROUP BY fecha ORDER BY fecha`).all(userId, from, to);
+  FROM presencia WHERE user_id = ? AND fecha BETWEEN ? AND ? AND en_horario = 1 GROUP BY fecha ORDER BY fecha`).all(userId, from, to);
 
 // ═══════════════════════════════════════════════════════════════════
 // PINGS DIRIGIDOS
@@ -626,7 +708,7 @@ const pingSummary = (from, to) => db.prepare(`
     SUM(CASE WHEN respondido = 0 THEN 1 ELSE 0 END) as perdidos,
     ROUND(AVG(tiempo_respuesta)) as prom_seg
   FROM pings p JOIN users u ON u.slack_id = p.user_id
-  WHERE p.fecha BETWEEN ? AND ? GROUP BY p.user_id ORDER BY u.nombre`).all(from, to);
+  WHERE p.fecha BETWEEN ? AND ? AND p.en_horario = 1 GROUP BY p.user_id ORDER BY u.nombre`).all(from, to);
 
 // ═══════════════════════════════════════════════════════════════════
 // PROYECTOS E IMPUTACIONES (time tracking interno)
@@ -731,6 +813,61 @@ const marcarAviso = (userId, fecha, tipo) =>
   db.prepare('INSERT OR IGNORE INTO avisos (user_id, fecha, tipo) VALUES (?, ?, ?)').run(userId, fecha, tipo);
 
 // ═══════════════════════════════════════════════════════════════════
+// RECLAMOS DE AUTO-CIERRE
+// ═══════════════════════════════════════════════════════════════════
+const crearReclamo = (userId, fecha, horaPedida, motivo) =>
+  db.prepare('INSERT INTO reclamos (user_id, fecha, hora_pedida, motivo) VALUES (?, ?, ?, ?)').run(userId, fecha, horaPedida, motivo).lastInsertRowid;
+const getReclamo = (id) => db.prepare('SELECT * FROM reclamos WHERE id = ?').get(id);
+const reclamoPendiente = (userId, fecha) =>
+  db.prepare("SELECT * FROM reclamos WHERE user_id = ? AND fecha = ? AND estado = 'pendiente'").get(userId, fecha);
+/** Pasa el reclamo a aprobado/rechazado; false si ya estaba resuelto (dos admins a la vez) */
+const resolverReclamo = (id, estado, adminId) =>
+  db.prepare("UPDATE reclamos SET estado = ?, resuelto_por = ? WHERE id = ? AND estado = 'pendiente'").run(estado, adminId, id).changes > 0;
+
+/** Reclamo aprobado: la salida auto-cerrada pasa a la hora pedida (el original queda loggeado) */
+const aplicarReclamo = (user, fecha, hora) => {
+  const s = getDia(user.slack_id, fecha).salida;
+  if (!s) return false;
+  let anticipado = Math.max(0, t.toMin(horarioDia(user, fecha).hora_salida) - t.toMin(hora));
+  if (anticipado <= TOLERANCIA_MIN) anticipado = 0;
+  db.prepare(`UPDATE registros SET valor_original = COALESCE(valor_original, hora), hora = ?, corregido = 1,
+    anticipado_min = ?, nota = 'reclamo_aprobado' WHERE id = ?`).run(hora, anticipado, s.id);
+  return true;
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// MARCAS (clientes) — imputación simplificada por %
+// ═══════════════════════════════════════════════════════════════════
+
+/** Marcas = clientes del catálogo; un proyecto sin cliente es su propia marca (Interno, Pitch) */
+const getMarcas = () => {
+  const marcas = {};
+  for (const p of getProyectos(true)) (marcas[p.cliente || p.nombre] ||= []).push(p);
+  return Object.keys(marcas).sort((a, b) => a.localeCompare(b, 'es')).map(nombre => ({ nombre, proyectos: marcas[nombre] }));
+};
+
+/**
+ * Proyecto donde se imputan las horas de una marca: si tiene un solo
+ * proyecto activo, ese; si tiene varios, uno "general" con el nombre del
+ * cliente (se crea la primera vez). Los reportes por cliente no cambian.
+ */
+const proyectoDeMarca = (marca) => {
+  const m = getMarcas().find(x => x.nombre === marca);
+  if (!m) return null;
+  if (m.proyectos.length === 1) return m.proyectos[0];
+  return m.proyectos.find(p => p.nombre.toLowerCase() === marca.toLowerCase()) || crearProyecto(marca, marca).proyecto;
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// PRUEBAS — "admin probar reset": borra el día de una persona
+// ═══════════════════════════════════════════════════════════════════
+const resetDiaPrueba = db.transaction((userId, fecha) => {
+  for (const tabla of ['registros', 'cierres', 'avisos', 'imputaciones', 'reclamos']) {
+    db.prepare(`DELETE FROM ${tabla} WHERE user_id = ? AND fecha = ?`).run(userId, fecha);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // REPORTES
 // ═══════════════════════════════════════════════════════════════════
 
@@ -751,7 +888,7 @@ const resumenPersonas = (from, to) => {
   return users.map(u => {
     const propios = dias.filter(d => d.user_id === u.slack_id);
     const horas = Math.round(propios.reduce((s, d) => s + (d.horas || 0), 0) * 100) / 100;
-    const esperadas = Math.round(diasEsperados(u.slack_id, from, to) * u.carga_horaria * 100) / 100;
+    const esperadas = horasEsperadas(u, from, to);
     const tardes = propios.filter(d => d.tarde_min > 0).length;
     const autoCierres = propios.filter(d => d.auto_closed).length;
     return { ...u, horas, esperadas, tardes, autoCierres, diasTrabajados: propios.filter(d => d.entrada).length };
@@ -761,12 +898,15 @@ const resumenPersonas = (from, to) => {
 module.exports = {
   db, TIPOS_ORDEN, NOVEDADES_EXENTAS,
   upsertUser, getUser, getAllUsers, getTracked, setTracked, setAdmin, setHorario, setEquipo, setModo, esSoloProyectos, isAdmin, isSuperAdmin,
-  getDia, nextTipo, horasDia, registrar, imputarAlmuerzo, corregirSalida, getDias,
+  SALIDA_VIERNES, horarioDia, horasEsperadas,
+  getDia, nextTipo, horasDia, registrar, imputarAlmuerzo, getDias,
   addNovedad, borrarNovedad, cargarNovedadRango, getNovedadesFecha, getNovedadesRange, isFeriado, getFeriados, hasNovedad, isExento, diasEsperados,
   setVacacionesAnuales, vacacionesResumen, novedadesRangosAdmin, evaluacionUsuario, TOLERANCIA_MIN,
   createToken, peekToken, consumeToken,
   getCierre, setCierre,
-  logPresencia, presenciaSummary, presenciaPorDia, ultimaActividad,
+  logPresencia, logActividad, ultimaActividadSlack, horaAutoCierre, actividadDia, presenciaSummary, presenciaPorDia,
+  crearReclamo, getReclamo, reclamoPendiente, resolverReclamo, aplicarReclamo,
+  getMarcas, proyectoDeMarca, resetDiaPrueba,
   addPingModo, getPingModoActivo, getPingModosEnRango, createPing, respondPing, expirarPings, pingsHoyCount, pingSummary,
   crearProyecto, archivarProyecto, reactivarProyecto, editarProyecto, getProyectos, setImputaciones, getImputacionesDia, hayImputaciones,
   horasPorProyecto, horasPorCliente, horasPorCategoria, horasProyectoPersona, horasUsuarioPorProyecto, getImputacionesRange,

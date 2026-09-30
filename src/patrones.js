@@ -16,7 +16,7 @@ const TARDES_ALERTA = 3;         // llegadas tarde en la ventana → alerta
 const AUTO_CIERRES_ALERTA = 3;   // auto-cierres en la ventana → alerta
 const SALDO_ALERTA_HS = -4;      // saldo mensual acumulado igual o peor → alerta
 const PRESENCIA_BAJA_PCT = 30;   // un día cuenta como "fantasma" si estuvo activo menos de esto...
-const PRESENCIA_MIN_CHECKS = 8;  // ...con al menos estos chequeos en el día (≈2hs de datos)
+const PRESENCIA_MIN_CHECKS = 60; // ...con al menos estos chequeos en horario (cada 2 min ≈ 2hs de datos)
 const PRESENCIA_DIAS_ALERTA = 3; // días fantasma en la ventana → alerta
 
 /**

@@ -228,7 +228,7 @@ const fechaDestino = (userId) => {
 
 /** Horas de referencia del día: trabajadas si el día cerró, si no la carga horaria */
 const horasBase = (user, fecha) =>
-  db.horasDia(db.getDia(user.slack_id, fecha)) ?? user.carga_horaria;
+  db.horasDia(db.getDia(user.slack_id, fecha)) ?? db.horarioDia(user, fecha).carga_horaria;
 
 const catalogoLineas = () => {
   const grupos = {};
@@ -260,7 +260,7 @@ const guardarYResumir = (user, fecha, finales, origen = 'chat', nota) => {
  * Si no puede matchear algo, pregunta mostrando las opciones y un
  * link al formulario web.
  */
-const procesarImputacion = (user, texto) => {
+const procesarImputacion = (user, texto, { soloSiClaro = false } = {}) => {
   if (!db.getProyectos(true).length) return null;
 
   // "ayer: jumbo 2, coral 1" / "hoy: ..." fuerzan el día de destino
@@ -284,6 +284,8 @@ const procesarImputacion = (user, texto) => {
   }
 
   if (dudas.length || fallos.length) {
+    // Con IA activa, lo que no se entiende del todo lo resuelve la charla
+    if (soloSiClaro) return null;
     const lineas = [txt.imputar.preguntaIntro];
     for (const d of dudas) {
       lineas.push(d.candidatos.length
@@ -367,10 +369,32 @@ const vistaProyectos = (user) => {
     text,
     blocks: [
       { type: 'section', text: { type: 'mrkdwn', text } },
-      btnImputarWeb(),
-      { type: 'context', elements: [{ type: 'mrkdwn', text: '_El botón te da un formulario con selects para cargar el detalle del día._' }] },
+      { type: 'actions', elements: [...btnMarcas().elements, ...btnImputarWeb().elements] },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: '_"Cargar mi día" es lo más rápido: elegís las marcas y el % de cada una. El formulario web sirve para el detalle por proyecto._' }] },
     ],
   };
+};
+
+/** Botón que abre el modal "¿en qué marcas trabajaste?" (ver marcas.js) */
+const btnMarcas = () => ({
+  type: 'actions',
+  elements: [{ type: 'button', style: 'primary', action_id: 'imputar_modal', text: { type: 'plain_text', text: txt.marcas.btn } }],
+});
+
+/** Manda el "¿en qué marcas trabajaste?" (sin chequeos — lo usa también "admin probar imputar") */
+const enviarPromptMarcas = async (client, user, fecha) => {
+  const horas = db.horasDia(db.getDia(user.slack_id, fecha));
+  const imputadas = Math.round(db.getImputacionesDia(user.slack_id, fecha).reduce((s, i) => s + i.horas, 0) * 10) / 10;
+  const text = txt.marcas.prompt(horas, imputadas);
+  await client.chat.postMessage({
+    channel: user.slack_id,
+    text,
+    blocks: [
+      { type: 'section', text: { type: 'mrkdwn', text } },
+      btnMarcas(),
+      { type: 'context', elements: [{ type: 'mrkdwn', text: txt.marcas.promptHint }] },
+    ],
+  });
 };
 
 /**
@@ -379,8 +403,7 @@ const vistaProyectos = (user) => {
  */
 const promptImputacion = async (client, user, fecha) => {
   try {
-    const activos = db.getProyectos(true);
-    if (!activos.length) return;
+    if (!db.getProyectos(true).length) return;
     const horas = db.horasDia(db.getDia(user.slack_id, fecha));
     const imputadas = Math.round(db.getImputacionesDia(user.slack_id, fecha)
       .reduce((s, i) => s + i.horas, 0) * 10) / 10;
@@ -388,19 +411,7 @@ const promptImputacion = async (client, user, fecha) => {
     if (imputadas > 0 && (horas == null || imputadas >= horas - 0.5)) return;
     if (db.avisoEnviado(user.slack_id, fecha, 'prompt_imputacion')) return;
     db.marcarAviso(user.slack_id, fecha, 'prompt_imputacion');
-
-    const text = imputadas > 0
-      ? `🗂️ *Llevás cargadas ${imputadas}hs de las ${horas}hs de hoy.* ¿Completamos el resto?\nContame con tus palabras (ej: \`el resto en ${activos[0].nombre}\`) o tocá el botón para sumar con clicks. 👇`
-      : `🗂️ *¿En qué trabajaste hoy${horas != null ? ` (${horas}hs)` : ''}?*\nContame con tus palabras, por ejemplo: \`2 horas ${activos[0].nombre}${activos[1] ? `, media hora ${activos[1].nombre}` : ''}${activos[2] ? `, el resto en ${activos[2].nombre}` : ''}\`\nO cargá el detalle con clicks tocando el botón. 👇`;
-    await client.chat.postMessage({
-      channel: user.slack_id,
-      text,
-      blocks: [
-        { type: 'section', text: { type: 'mrkdwn', text } },
-        btnImputarWeb(),
-        { type: 'context', elements: [{ type: 'mrkdwn', text: `_Escribí *proyectos* para ver el catálogo. Categorías: ${CATEGORIAS.join(', ')}_` }] },
-      ],
-    });
+    await enviarPromptMarcas(client, user, fecha);
   } catch (e) {
     console.error('[proyectos] No pude mandar el prompt de imputación:', e.message);
   }
@@ -408,5 +419,5 @@ const promptImputacion = async (client, user, fecha) => {
 
 module.exports = {
   CATEGORIAS, normalizarCategoria, parsearImputacion, matchProyecto, buscarProyecto,
-  fechaDestino, horasBase, guardarYResumir, procesarImputacion, vistaProyectos, promptImputacion,
+  fechaDestino, horasBase, guardarYResumir, procesarImputacion, vistaProyectos, promptImputacion, enviarPromptMarcas, btnMarcas,
 };

@@ -80,7 +80,7 @@ const fichaPersona = (user) => {
   const dias = db.getDias(desde, hoy, user.slack_id);
 
   const horas = Math.round(dias.reduce((s, d) => s + (d.horas || 0), 0) * 10) / 10;
-  const esperadas = Math.round(db.diasEsperados(user.slack_id, desde, hoy) * user.carga_horaria * 10) / 10;
+  const esperadas = Math.round(db.horasEsperadas(user, desde, hoy) * 10) / 10;
   const tardes = dias.filter(d => d.tarde_min > 0);
   const autos = dias.filter(d => d.auto_closed);
   const saldo = saldoMes(user);

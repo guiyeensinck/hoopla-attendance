@@ -10,6 +10,8 @@ const TIPOS = {
   salida:          { emoji: '🔴', label: 'Salida' },
 };
 
+const minutos = (n) => `${n} minuto${n === 1 ? '' : 's'}`;
+
 const NOVEDADES = {
   feriado:    '🏖️ Feriado',
   vacaciones: '✈️ Vacaciones',
@@ -30,7 +32,8 @@ module.exports = {
     menuSaludo: (nombre) => `👋 ¡Hola, ${nombre}! ¿Qué necesitás?`,
     btnMarcar: (label) => `🕒 Marcar ${label}`,
     btnSemana: '📊 Mi semana',
-    menuHint: '_También podés escribirme directo: *marcar* (link de fichaje), *cargar* (tus horas por proyecto, en cualquier momento del día), *horarios* (tu semana) o *proyectos* (catálogo)._',
+    menuHint: '_También podés escribirme *marcar*, *cargar*, *horarios* o *proyectos* — o usar los comandos `/marcar`, `/cargar`, `/horarios`, `/ayuda` desde cualquier lado._',
+    btnReclamo: '🙋 Reclamar cierre',
     adminHint: '_Sos admin: escribí *admin* para ver los comandos de gestión._',
     modoSoloProyectos: (hora) => `ℹ️ *Te configuraron en modo "solo proyectos".*\nNo tenés que marcar entrada/salida ni te van a llegar recordatorios de asistencia. Lo único: cada día alrededor de las ${hora} te voy a preguntar en qué proyectos trabajaste — respondeme tipo \`Jumbo 4, Interno 2\`. También podés mandarme la imputación cuando quieras, sin esperar la pregunta.`,
   },
@@ -40,14 +43,11 @@ module.exports = {
     linkTitle: '🕒 *¡Hora de marcar!*',
     linkInstructions: (label) => `Vas a registrar: *${label}*. Abrí este link desde tu computadora:`,
     linkLabel: (emoji, label) => `${emoji} Marcar ${label.toLowerCase()}`,
-    linkLabelCorreccion: '✏️ Corregir mi salida',
-    linkCorreccion: 'Tu salida fue cerrada automáticamente. Con este link podés corregirla (una sola vez):',
     expireNote: '⏱️ El link es de un solo uso y expira en 5 minutos.',
     diaCompleto: '✅ Ya tenés la jornada completa registrada por hoy.',
     noTrackeado: '⚠️ Todavía no estás en el seguimiento de asistencia. Pedile a un admin que te agregue.',
     confirmacionDM: (emoji, label, hora) => `${emoji} *${label}* registrada a las *${hora}* desde la web. 👌`,
     confirmacionTarde: (min) => ` _(+${min} min tarde según tu horario)_`,
-    confirmacionCorreccion: (hora, original) => `✏️ Salida *corregida a las ${hora}* (el cierre automático decía ${original}).`,
     noTrackeadoAdmin: '⚠️ Todavía no estás en el seguimiento de asistencia. Como sos admin, agregate vos: escribime `admin agregarme`.',
   },
 
@@ -58,7 +58,6 @@ module.exports = {
     linkInvalido: 'Link inválido o expirado',
     linkInvalidoDetalle: 'Este link ya fue usado o venció (dura 5 minutos). Escribile "marcar" al bot en Slack y te manda uno nuevo.',
     registrado: '✅ Registrado',
-    corregido: '✅ Salida corregida',
     diaCompleto: '✅ Día completo',
     tarde: (min) => `⚠️ Llegaste ${min} min tarde según tu horario.`,
     anticipado: (min) => `⚠️ Saliste ${min} min antes de tu horario.`,
@@ -100,24 +99,52 @@ module.exports = {
 
 *¿Qué registra el sistema?*
 • Tus marcaciones del día: entrada, inicio y fin de almuerzo, y salida.
-• Tu presencia en Slack (activo/ausente) únicamente dentro de tu horario laboral.
+• Tu actividad en Slack: presencia (activo/ausente) cada 2 minutos entre las 7 y las 23 en días hábiles, y la *hora* (nunca el contenido) de tus mensajes y reacciones en canales donde está el bot.
 
 *¿Qué ve el admin?*
-Tus horarios marcados, llegadas tarde y cierres automáticos. Nadie más del equipo ve tus datos.
+Tus horarios marcados, llegadas tarde, cierres automáticos y tu actividad en Slack. Nadie más del equipo ve tus datos.
 
 *¿Cómo marco?*
-Escribime *marcar* acá en este chat (como le escribirías a cualquier compañero). Te mando un link de un solo uso (dura 5 min) que se abre *desde la computadora*. La hora la pone el servidor.
+Escribime *marcar* acá (o usá \`/marcar\` desde cualquier lado). Te mando un link de un solo uso (dura 5 min) que se abre *desde la computadora*. La hora la pone el servidor.
 
 *Tu horario asignado*
-🕐 ${user.hora_entrada} a ${user.hora_salida} — ${user.carga_horaria}hs por día. Si está mal, avisale a tu admin.
+🕐 ${user.hora_entrada} a ${user.hora_salida} — ${user.carga_horaria}hs por día. Los viernes la salida es a las 17:30. Si está mal, avisale a tu admin.
 
 *¿Y al final del día?*
-Cuando llegue tu horario de salida, si todavía no marcaste te escribo con un botón para cerrar el día. Si no respondés en 20 minutos, registro tu salida a tu horario automáticamente (podés corregirla una vez si seguías trabajando).
+A tu horario de salida te pregunto si terminaste:
+• *Terminé* → registro tu salida.
+• *Sigo trabajando* → te vuelvo a preguntar cada 20 minutos. Las horas extra suman a tu balance.
+• *Si no contestás en 3 minutos*, cierro tu día en tu última actividad en Slack. Si estabas en una reunión sin tocar la compu, podés mandar un reclamo y lo revisa un admin.
+
+Después te pregunto en qué marcas trabajaste: elegís las marcas y el % de cada una.
 
 *¿Ausencias, médico, vacaciones?*
 Avisale a tu admin, que las carga en el sistema para que no te cuenten como falta.
 
-Escribime *horarios* cuando quieras ver tu estado del día y tu balance semanal. 📊`,
+Escribí \`/ayuda\` cuando quieras ver cómo funciona todo. 📊`,
+
+  // ─── /ayuda ───────────────────────────────────────────────────────
+  ayuda: `📖 *Cómo funciona la asistencia*
+
+*Tu día*
+1. *Entrada* — \`/marcar\` (o escribime *marcar*) y abrí el link desde la compu.
+2. *Almuerzo* — marcá inicio y fin igual que la entrada.
+3. *Salida* — a tu horario (viernes 17:30) te pregunto *¿terminaste?*
+   • ✅ *Terminé* → cierro tu día.
+   • 💪 *Sigo trabajando* → te repregunto cada 20'. Las horas extra suman.
+   • Sin respuesta en 3' → cierro en tu *última actividad en Slack*. ¿Estabas en una reunión? Tocá *🙋 Estaba trabajando* y un admin lo revisa.
+4. *¿En qué trabajaste?* — elegís las marcas y el % de cada una.
+
+*Comandos*
+\`/marcar\` — link para tu próxima marcación
+\`/cargar\` — cargar en qué marcas trabajaste (en cualquier momento)
+\`/horarios\` — tu día, tu semana y tu saldo del mes
+\`/proyectos\` — catálogo y lo que llevás imputado
+\`/misemana\` — tu semana en proyectos (web)
+\`/ayuda\` — esto
+
+*Qué se registra*
+Tus marcaciones y tu actividad en Slack (presencia y la hora de tus mensajes en canales, nunca el contenido). Solo vos y los admins ven tus datos.`,
 
   // ─── Recordatorios ────────────────────────────────────────────────
   recordatorios: {
@@ -129,13 +156,53 @@ Escribime *horarios* cuando quieras ver tu estado del día y tu balance semanal.
 
   // ─── Cierre del día ───────────────────────────────────────────────
   cierre: {
-    dm: (hora) => `🌆 *Llegó tu horario de salida (${hora}).* ¿Cerramos el día?\n_Si no respondés en 30 minutos, registro tu salida automáticamente según tu última actividad detectada (como máximo ${hora}). Después podés corregirla una vez si seguías trabajando._`,
-    recordatorio: '🔔 *Seguís sin marcar tu salida.* Tocá el botón o escribime *marcar* — si no, en un rato la registro automáticamente según tu última actividad.',
-    btnSalida: '🔴 Marcar salida',
+    pregunta: (hora, min) => `🌆 *Son las ${hora}, tu horario de salida.* ¿Terminaste por hoy?\n_Si no contestás en ${minutos(min)}, cierro tu día en tu última actividad en Slack._`,
+    preguntaSigo: (min) => `💪 *¿Seguís trabajando?*\n_Si no contestás en ${minutos(min)}, cierro tu día en tu última actividad en Slack (como mínimo, la última vez que me contestaste)._`,
+    btnTermine: '✅ Terminé',
+    btnSigo: '💪 Sigo trabajando',
+    sigoOk: (proxima) => `💪 Dale, anotado. Te vuelvo a preguntar a las *${proxima}*. Cuando termines, tocá *Terminé* o escribime *marcar*.`,
     salidaRegistrada: (hora) => `✅ Salida registrada a las *${hora}*. ¡Buen descanso!`,
-    yaCerrado: '✅ Tu salida ya estaba registrada.',
-    autoCerrado: (hora) => `🔒 No respondiste, así que registré tu salida automáticamente a las *${hora}* (tu horario). Si seguías trabajando, podés corregirla una sola vez: escribime *marcar*.`,
-    autoCerradoActividad: (hora) => `🔒 No respondiste, así que registré tu salida a las *${hora}* — tu última actividad detectada (presencia en Slack / marcaciones). Si seguías trabajando, podés corregirla una sola vez: escribime *marcar*.`,
+    yaCerrado: (hora) => `✅ Tu día ya está cerrado${hora ? ` (salida ${hora})` : ''}.`,
+    autoCerrado: (hora, motivo) => ({
+      actividad: `🔒 No contestaste a tiempo, así que cerré tu día a las *${hora}*: tu última actividad en Slack.`,
+      respuesta: `🔒 No contestaste a tiempo, así que cerré tu día a las *${hora}*: la última vez que me dijiste que seguías.`,
+      sin_datos: `🔒 No contestaste a tiempo y no tengo actividad tuya en Slack, así que cerré tu día a las *${hora}* (tu horario).`,
+    }[motivo]) + '\n_Si estabas trabajando sin usar Slack (ej. en una reunión), mandá un reclamo y lo revisa un admin._',
+    btnReclamo: '🙋 Estaba trabajando',
+  },
+
+  // ─── Reclamos de auto-cierre ──────────────────────────────────────
+  reclamo: {
+    titulo: 'Reclamar cierre',
+    intro: (hora) => `Tu día se cerró automáticamente a las *${hora}*. Si seguías trabajando, decinos hasta qué hora y por qué. Lo revisa un admin.`,
+    labelHora: '¿Hasta qué hora trabajaste?',
+    labelMotivo: '¿Qué estabas haciendo?',
+    placeholderMotivo: 'Ej: reunión con el cliente hasta las 19',
+    enviado: (hora) => `📨 Mandé tu reclamo (salida a las *${hora}*). Te aviso cuando un admin lo revise.`,
+    yaPendiente: '⏳ Ya tenés un reclamo pendiente para ese día — esperá a que lo revise un admin.',
+    noAplica: 'ℹ️ Solo se puede reclamar un cierre automático que no haya sido corregido.',
+    horaInvalida: (salida) => `Tiene que ser después de ${salida} (el cierre automático) y no en el futuro.`,
+    admin: (nombre, fecha, original, pedida, motivo) => `🙋 *Reclamo de cierre — ${nombre}* (${fecha})\nCierre automático: *${original}* → pide: *${pedida}*\n> ${motivo}`,
+    btnAprobar: '✅ Aprobar',
+    btnRechazar: '❌ Rechazar',
+    aprobadoAdmin: (nombre, pedida, admin) => `✅ Reclamo de *${nombre}* aprobado por <@${admin}> — salida corregida a *${pedida}*.`,
+    rechazadoAdmin: (nombre, admin) => `❌ Reclamo de *${nombre}* rechazado por <@${admin}>.`,
+    aprobadoUser: (fecha, hora) => `✅ Aprobaron tu reclamo: tu salida del ${fecha} quedó a las *${hora}*.`,
+    rechazadoUser: (fecha, hora) => `❌ Rechazaron tu reclamo del ${fecha}: la salida queda a las *${hora}*. Si tenés dudas, hablalo con tu admin.`,
+    yaResuelto: 'Este reclamo ya fue resuelto.',
+  },
+
+  // ─── Imputación por marcas (modal) ────────────────────────────────
+  marcas: {
+    btn: '🗂️ Cargar mi día',
+    prompt: (horas, imputadas) => imputadas > 0
+      ? `🗂️ *Llevás cargadas ${imputadas}hs${horas != null ? ` de las ${horas}hs de hoy` : ''}.* ¿Completamos? Elegí las marcas y el % que le dedicaste a cada una.`
+      : `🗂️ *¿En qué marcas trabajaste hoy${horas != null ? ` (${horas}hs)` : ''}?* Elegí una o varias y ajustá el % de cada una.`,
+    promptHint: '_Son 2 clicks: marcás las marcas y listo (arranca repartido en partes iguales). También podés escribirme `Jumbo 4, Interno 2`._',
+    sinCatalogo: '🗂️ Todavía no hay marcas cargadas. (Las crea el admin con `admin proyecto agregar Cliente / Proyecto`.)',
+    btnDM: '🗂️ Abrir',
+    abrir: 'Tocá el botón para cargar en qué marcas trabajaste:',
+    guardado: (dia, pares, horas) => `🗂️ Listo, cargué tu ${dia} (${horas}hs): ${pares.map(p => `${p.nombre} ${p.pct}% (${p.horas}hs)`).join(' · ')}`,
   },
 
   // ─── Pings dirigidos ──────────────────────────────────────────────

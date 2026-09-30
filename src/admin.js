@@ -4,7 +4,8 @@ const db = require('./database');
 const txt = require('./texts');
 const { agregarAlTracking } = require('./onboarding');
 const { resumenDiario, reportePersonas, fichaPersona, resumenEjecutivo, reporteProyectos } = require('./reports');
-const { buscarProyecto } = require('./proyectos');
+const { buscarProyecto, enviarPromptMarcas } = require('./proyectos');
+const pruebas = require('./pruebas');
 const { generarExcel } = require('./excel');
 
 // Siempre @mención de Slack, nunca nombre tipeado
@@ -37,12 +38,42 @@ const USO = `⚙️ *Gestión de asistencia* — escribime \`admin ...\` acá en
 *Monitoreo*
 \`admin ping @user [días]\` — activa chequeos de actividad (la persona es notificada)
 \`admin recordar\` — recordatorio de entrada YA a los que no marcaron hoy
-\`admin novedades [FECHA]\` · \`admin actividad\` · \`admin presencia\`
+\`admin novedades [FECHA]\` · \`admin actividad\` (pings) · \`admin presencia\`
+\`admin actividad @user [FECHA]\` — actividad en Slack del día vs. lo que marcó
+\`admin canales\` — suma el bot a todos los canales públicos (para registrar actividad)
+
+*Probar (solo te afecta a vos)*
+\`admin probar\` — ver las opciones de prueba
 
 *Reportes*
 \`admin reporte hoy\` · \`admin reporte semana\` · \`admin reporte mes\` · \`admin reporte ejecutivo\` · \`admin export\` (Excel por DM)
 
 _Fechas en formato YYYY-MM-DD._`;
+
+/** Actividad en Slack de una persona en un día, contra lo que marcó */
+const lineaActividad = (uid, fecha) => {
+  const user = db.getUser(uid);
+  const a = db.actividadDia(uid, fecha);
+  const dia = db.getDia(uid, fecha);
+  const cierre = db.getCierre(uid, fecha);
+  const marc = Object.entries(txt.TIPOS).map(([k, v]) => `${v.emoji} ${v.label}: ${dia[k] ? `*${dia[k].hora}*${dia[k].auto_closed ? ' _(auto)_' : ''}${dia[k].corregido ? ` _(corregida, era ${dia[k].valor_original})_` : ''}` : '—'}`);
+  const tramos = a.tramos.length ? a.tramos.map(x => x.desde === x.hasta ? x.desde : `${x.desde}–${x.hasta}`).join(', ') : '—';
+  const lineas = [
+    `📡 *Actividad en Slack — ${user?.nombre || uid}* (${t.fmtDate(fecha)})`,
+    `Primera: *${a.primera || '—'}* · Última: *${a.ultima || '—'}*`,
+    `Tramos activos: ${tramos}`,
+    `_${a.checks} chequeos de presencia · ${a.mensajes} mensajes · ${a.reacciones} reacciones en canales_`,
+    '',
+    marc.join('\n'),
+  ];
+  if (cierre && cierre.estado !== 'cerrado') {
+    const prueba = pruebas.get(uid);
+    const u = prueba ? { ...db.horarioDia(user, fecha), hora_salida: prueba.salida } : db.horarioDia(user, fecha);
+    const { hora, motivo } = db.horaAutoCierre(u, fecha, cierre);
+    lineas.push('', `⏳ Cierre en curso (${cierre.estado}${cierre.ultima_respuesta ? `, último "sigo" ${cierre.ultima_respuesta}` : ''}). Si se cerrara ahora: *${hora}* _(${{ actividad: 'última actividad en Slack', respuesta: 'último "sigo"', sin_datos: 'sin actividad → horario' }[motivo]})_`);
+  }
+  return lineas.join('\n');
+};
 
 /**
  * Maneja un mensaje "admin ..." recibido por DM.
@@ -344,6 +375,12 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
           break;
         }
         case 'actividad': {
+          const uidAct = extractMention(parts[1] || '');
+          if (uidAct) {
+            const fecha = t.isValidDate(parts[2]) ? parts[2] : t.today();
+            await say(lineaActividad(uidAct, fecha));
+            return;
+          }
           const pings = db.pingSummary(t.weekStart(), t.today());
           if (!pings.length) { await say('🏓 Sin pings dirigidos esta semana.'); return; }
           const lineas = pings.map(p => `• *${p.nombre}* — ${p.ok}/${p.enviados} respondidos${p.perdidos ? `, ${p.perdidos} perdidos` : ''}${p.prom_seg != null ? ` (prom. ${p.prom_seg}s)` : ''}`);
@@ -356,6 +393,76 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
           const lineas = pres.map(p => `• *${p.nombre}* — ${p.pct}% activo (${p.activos}/${p.checks} checks)`);
           await say(`👁️ *Presencia Slack (semana):*\n${lineas.join('\n')}`);
           break;
+        }
+
+        case 'canales': {
+          // El bot solo ve mensajes/reacciones de los canales donde está
+          let cursor, unidos = 0, yaEstaba = 0;
+          do {
+            const r = await client.conversations.list({ limit: 200, cursor, types: 'public_channel', exclude_archived: true });
+            for (const c of r.channels) {
+              if (c.is_member) { yaEstaba++; continue; }
+              try { await client.conversations.join({ channel: c.id }); unidos++; } catch (e) { console.error(`[canales] ${c.name}: ${e.data?.error || e.message}`); }
+            }
+            cursor = r.response_metadata?.next_cursor;
+          } while (cursor);
+          await say(`📡 Me sumé a *${unidos}* canales públicos (ya estaba en ${yaEstaba}). Desde ahora registro la *hora* de los mensajes y reacciones ahí (nunca el contenido).\n_Los canales privados hay que invitarme a mano: \`/invite @bot\`._`);
+          break;
+        }
+
+        // ─── Pruebas (solo afectan al admin que las corre) ────────
+        case 'probar': {
+          const sub = (parts[1] || '').toLowerCase();
+          const yo = db.getUser(adminId);
+          if (sub && !yo?.trackeado) { await say(txt.marcar.noTrackeadoAdmin); return; }
+          const hoy = t.today();
+
+          if (sub === 'cierre') {
+            const rapido = /^r[aá]pido$/i.test(parts[2] || '');
+            // Sin entrada hoy → se registra una de prueba (1 hora atrás) para que el cierre tenga jornada
+            if (!db.getDia(adminId, hoy).entrada) {
+              db.registrar(yo, hoy, 'entrada', t.toHHMM(Math.max(0, t.nowMin() - 60)), 'web', { nota: 'prueba' });
+            }
+            db.db.prepare('DELETE FROM cierres WHERE user_id = ? AND fecha = ?').run(adminId, hoy); // arranca de cero
+            pruebas.set(adminId, { salida: t.currentTime(), rapido });
+            const tm = pruebas.tiempos(adminId);
+            await say(`🧪 *Prueba de cierre* — tu salida de hoy pasa a ser *ahora* (${t.currentTime()}). Te llega el "¿terminaste?" en un segundo.\n• Sin respuesta en *${tm.respuesta}'* → cierre en tu última actividad en Slack.\n• "Sigo trabajando" → repregunta cada *${tm.sigo}'*.${rapido ? ' _(modo rápido)_' : '\n_Para no esperar 20\', usá \`admin probar cierre rapido\`._'}\nDespués: \`admin probar actividad\` para ver qué tomó, y \`admin probar reset\` para repetir.`);
+            await pruebas.tickAhora();
+            return;
+          }
+          if (sub === 'imputar') {
+            await enviarPromptMarcas(client, yo, hoy);
+            await say('🧪 Te mandé el "¿en qué marcas trabajaste?" (el mismo que llega después de la salida).');
+            return;
+          }
+          if (sub === 'actividad') {
+            await say(lineaActividad(adminId, t.isValidDate(parts[2]) ? parts[2] : hoy));
+            return;
+          }
+          if (sub === 'horario') {
+            const viernes = t.dayjs(hoy).day(5).format('YYYY-MM-DD');
+            const h = db.horarioDia(yo, hoy), v = db.horarioDia(yo, viernes);
+            await say(`🕐 *Hoy* (${t.dayjs(hoy).format('dddd')}): ${h.hora_entrada}–${h.hora_salida} · ${h.carga_horaria}hs\n🕐 *Viernes*: ${v.hora_entrada}–${v.hora_salida} · ${v.carga_horaria}hs${pruebas.get(adminId) ? `\n🧪 En prueba: salida ${pruebas.get(adminId).salida}` : ''}`);
+            return;
+          }
+          if (sub === 'reset' || sub === 'fin') {
+            pruebas.clear(adminId);
+            if (sub === 'reset') db.resetDiaPrueba(adminId, hoy);
+            await say(sub === 'reset'
+              ? '🧹 Borré tus marcaciones, cierre, avisos, imputaciones y reclamos de hoy y salí del modo prueba. Podés arrancar de cero.'
+              : '✅ Saliste del modo prueba (tus registros de hoy quedan como están).');
+            return;
+          }
+          await say(`🧪 *Pruebas* — solo te afectan a vos; el resto del equipo sigue normal.
+\`admin probar cierre\` — tu salida pasa a ser *ahora*: te llega el "¿terminaste?" (3' para contestar, "sigo" cada 20'). Si no marcaste entrada, crea una de prueba.
+\`admin probar cierre rapido\` — igual pero con 1' para contestar y "sigo" cada 2'
+\`admin probar imputar\` — te manda el "¿en qué marcas trabajaste?" (modal con %)
+\`admin probar actividad [FECHA]\` — tu actividad en Slack registrada y a qué hora cerraría el día
+\`admin probar horario\` — tu horario efectivo de hoy y del viernes
+\`admin probar reset\` — borra TODO tu día de hoy (marcaciones, cierre, imputaciones) para repetir
+\`admin probar fin\` — sale del modo prueba sin borrar nada
+_Los comandos \`/ayuda\`, \`/marcar\`, \`/cargar\`, \`/horarios\` los probás escribiéndolos en cualquier canal._`);
+          return;
         }
 
         // ─── Reportes ─────────────────────────────────────────────
@@ -407,4 +514,4 @@ const ensureUser = async (client, slackId) => {
   db.upsertUser(slackId, nombre);
 };
 
-module.exports = { handleAdmin };
+module.exports = { handleAdmin, USO };

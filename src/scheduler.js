@@ -6,6 +6,7 @@ const txt = require('./texts');
 const { resumenDiario, reportePersonas, resumenEjecutivo } = require('./reports');
 const { detectarPatrones } = require('./patrones');
 const { promptImputacion } = require('./proyectos');
+const pruebas = require('./pruebas');
 const { runPresenceCheck, runPingCycle } = require('./activity');
 const { generarExcel } = require('./excel');
 
@@ -19,7 +20,10 @@ const CFG = {
   ALMUERZO_DESDE: 13 * 60 + 30,     // 13:30 — empieza a recordar el inicio de almuerzo
   ALMUERZO_HASTA: 15 * 60,          // 15:00 — deja de insistir
   TOPE_FIN_ALMUERZO: 60,            // tras inicio+60', insiste 1 hora con el fin de almuerzo
-  TIMEOUT_CIERRE: 30,               // min desde el DM de cierre hasta el auto-cierre (recordatorios a +10 y +20)
+  // Cierre: a su horario de salida se le pregunta "¿terminaste?"; tiene
+  // pruebas.TIEMPOS.respuesta (3') para contestar. Si dice "sigo", se le
+  // vuelve a preguntar cada pruebas.TIEMPOS.sigo (20').
+  CIERRE_LIMITE: 23 * 60 + 50,      // 23:50 — ninguna jornada queda abierta de un día para el otro
 };
 
 const VENTANA_ALERTA = 30;          // min de ventana para la alerta admin de faltantes
@@ -44,24 +48,46 @@ const setupScheduler = (app) => {
     .filter(u => !db.isExento(u.slack_id, fecha));
 
   // ─── Auto-cierre con flag ──────────────────────────────────────────
-  // La salida se estampa en la ÚLTIMA ACTIVIDAD detectada (presencia
-  // "active" de Slack o última marcación), con tope en el horario
-  // personal. Sin datos de presencia ese día, cae al horario personal.
-  const autoCerrar = async (user, fecha) => {
-    const ultima = db.ultimaActividad(user.slack_id, fecha);
-    const usaActividad = ultima && ultima < user.hora_salida;
-    const hora = usaActividad ? ultima : user.hora_salida;
+  // La salida se estampa en la ÚLTIMA ACTIVIDAD EN SLACK (presencia activa o
+  // mensajes/reacciones en canales — no la interacción con el bot). Detalle
+  // del cálculo en db.horaAutoCierre.
+  const autoCerrar = async (user, fecha, cierre) => {
+    const uid = user.slack_id;
+    const { hora, motivo } = db.horaAutoCierre(user, fecha, cierre);
 
     // El almuerzo solo se imputa si la salida quedó después de las 14:00
     if (t.toMin(hora) >= 14 * 60) db.imputarAlmuerzo(user, fecha);
     db.registrar(user, fecha, 'salida', hora, 'auto', {
       auto_closed: true,
-      nota: usaActividad ? 'auto_closed_ultima_actividad' : 'auto_closed_sin_respuesta',
+      nota: { actividad: 'auto_closed_ultima_actividad', respuesta: 'auto_closed_ultima_respuesta', sin_datos: 'auto_closed_sin_respuesta' }[motivo],
     });
-    db.setCierre(user.slack_id, fecha, { estado: 'cerrado' });
-    await dm(user.slack_id, usaActividad ? txt.cierre.autoCerradoActividad(hora) : txt.cierre.autoCerrado(hora));
+    db.setCierre(uid, fecha, { estado: 'cerrado' });
+    const texto = txt.cierre.autoCerrado(hora, motivo);
+    await dm(uid, texto, [
+      { type: 'section', text: { type: 'mrkdwn', text: texto } },
+      { type: 'actions', elements: [
+        { type: 'button', text: { type: 'plain_text', text: txt.cierre.btnReclamo }, action_id: 'reclamo_abrir', value: fecha },
+      ] },
+    ]);
     await promptImputacion(app.client, user, fecha);
-    console.log(`[cierre] Auto-cierre de ${user.nombre} → ${hora}${usaActividad ? ' (última actividad)' : ' (horario)'}`);
+    console.log(`[cierre] Auto-cierre de ${user.nombre} → ${hora} (${motivo})`);
+  };
+
+  // "¿Terminaste?" con dos botones. primera = la pregunta de su horario de salida
+  const preguntarCierre = async (user, fecha, primera) => {
+    const uid = user.slack_id;
+    const hora = t.currentTime();
+    const { respuesta } = pruebas.tiempos(uid);
+    db.setCierre(uid, fecha, { estado: 'preguntado', pregunta_hora: hora, ...(primera ? { dm_hora: hora } : {}) });
+    const texto = primera ? txt.cierre.pregunta(user.hora_salida, respuesta) : txt.cierre.preguntaSigo(respuesta);
+    await dm(uid, texto, [
+      { type: 'section', text: { type: 'mrkdwn', text: texto } },
+      { type: 'actions', elements: [
+        { type: 'button', text: { type: 'plain_text', text: txt.cierre.btnTermine }, style: 'primary', action_id: 'cierre_salida' },
+        { type: 'button', text: { type: 'plain_text', text: txt.cierre.btnSigo }, action_id: 'cierre_sigo' },
+      ] },
+    ]);
+    console.log(`[cierre] ¿Terminaste? (${primera ? 'horario' : 'seguimiento'}) → ${user.nombre}`);
   };
 
   // Manda un recordatorio como máximo una vez por "slot" de 10 minutos
@@ -74,22 +100,25 @@ const setupScheduler = (app) => {
     console.log(`[recordatorio] ${tipoBase} #${slot} → ${uid}`);
   };
 
-  const botonSalida = (texto) => [
-    { type: 'section', text: { type: 'mrkdwn', text: texto } },
-    { type: 'actions', elements: [
-      { type: 'button', text: { type: 'plain_text', text: txt.cierre.btnSalida }, style: 'primary', action_id: 'cierre_salida' },
-    ] },
-  ];
-
   // ─── Tick por minuto ───────────────────────────────────────────────
   const tick = async () => {
     const fecha = t.today();
-    if (!t.isWeekday(fecha) || db.isFeriado(fecha)) return;
+    const habil = t.isWeekday(fecha) && !db.isFeriado(fecha);
     const nowM = t.nowMin();
     const faltantesBatch = [];
 
-    for (const user of trackedActivos(fecha)) {
-      const uid = user.slack_id;
+    // Personas en modo prueba: corren siempre (también finde/feriado)
+    const usuarios = habil ? trackedActivos(fecha) : [];
+    for (const uid of pruebas.uids()) {
+      const u = db.getUser(uid);
+      if (u?.trackeado && !usuarios.some(x => x.slack_id === uid)) usuarios.push(u);
+    }
+
+    for (const base of usuarios) {
+      const uid = base.slack_id;
+      const prueba = pruebas.get(uid);
+      // Horario efectivo de hoy (viernes 17:30); en prueba, la salida es la que fijó el admin
+      const user = prueba ? { ...db.horarioDia(base, fecha), hora_salida: prueba.salida } : db.horarioDia(base, fecha);
       const entradaM = t.toMin(user.hora_entrada);
       const salidaM = t.toMin(user.hora_salida);
       const dia = db.getDia(uid, fecha);
@@ -104,38 +133,39 @@ const setupScheduler = (app) => {
           continue;
         }
 
-        // 1. Entrada: cada 10 min desde su horario hasta que marque (tope 90')
-        if (!dia.entrada && nowM >= entradaM + CFG.INTERVALO && nowM <= entradaM + CFG.TOPE_ENTRADA) {
-          const slot = Math.floor((nowM - entradaM) / CFG.INTERVALO);
-          await recordar(uid, fecha, 'rec_entrada', slot, txt.recordatorios.entrada(user.hora_entrada));
-        }
+        // En prueba solo corre el flujo de cierre (sin recordatorios de entrada/almuerzo)
+        if (!prueba) {
+          // 1. Entrada: cada 10 min desde su horario hasta que marque (tope 90')
+          if (!dia.entrada && nowM >= entradaM + CFG.INTERVALO && nowM <= entradaM + CFG.TOPE_ENTRADA) {
+            const slot = Math.floor((nowM - entradaM) / CFG.INTERVALO);
+            await recordar(uid, fecha, 'rec_entrada', slot, txt.recordatorios.entrada(user.hora_entrada));
+          }
 
-        // 2. Entrada +60 min: alerta al canal admin (una sola vez)
-        if (!dia.entrada && nowM >= entradaM + 60 && nowM <= entradaM + 60 + VENTANA_ALERTA && !db.avisoEnviado(uid, fecha, 'alerta_admin')) {
-          db.marcarAviso(uid, fecha, 'alerta_admin');
-          faltantesBatch.push(user);
-        }
+          // 2. Entrada +60 min: alerta al canal admin (una sola vez)
+          if (!dia.entrada && nowM >= entradaM + 60 && nowM <= entradaM + 60 + VENTANA_ALERTA && !db.avisoEnviado(uid, fecha, 'alerta_admin')) {
+            db.marcarAviso(uid, fecha, 'alerta_admin');
+            faltantesBatch.push(user);
+          }
 
-        // 3. Inicio de almuerzo: cada 10 min entre 13:30 y 15:00 si no lo marcó
-        if (dia.entrada && !dia.salida && !dia.almuerzo_inicio && nowM >= CFG.ALMUERZO_DESDE && nowM <= CFG.ALMUERZO_HASTA) {
-          const slot = Math.floor((nowM - CFG.ALMUERZO_DESDE) / CFG.INTERVALO);
-          await recordar(uid, fecha, 'rec_alm_ini', slot, txt.recordatorios.almuerzoInicio);
-        }
+          // 3. Inicio de almuerzo: cada 10 min entre 13:30 y 15:00 si no lo marcó
+          if (dia.entrada && !dia.salida && !dia.almuerzo_inicio && nowM >= CFG.ALMUERZO_DESDE && nowM <= CFG.ALMUERZO_HASTA) {
+            const slot = Math.floor((nowM - CFG.ALMUERZO_DESDE) / CFG.INTERVALO);
+            await recordar(uid, fecha, 'rec_alm_ini', slot, txt.recordatorios.almuerzoInicio);
+          }
 
-        // 4. Fin de almuerzo: cada 10 min desde inicio+60' (tope 1 hora)
-        if (dia.almuerzo_inicio && !dia.almuerzo_fin && !dia.salida) {
-          const inicioM = t.toMin(dia.almuerzo_inicio.hora);
-          if (nowM >= inicioM + 60 + CFG.INTERVALO && nowM <= inicioM + 60 + CFG.TOPE_FIN_ALMUERZO) {
-            const slot = Math.floor((nowM - inicioM - 60) / CFG.INTERVALO);
-            await recordar(uid, fecha, 'rec_alm_fin', slot, txt.recordatorios.almuerzoFin(dia.almuerzo_inicio.hora));
+          // 4. Fin de almuerzo: cada 10 min desde inicio+60' (tope 1 hora)
+          if (dia.almuerzo_inicio && !dia.almuerzo_fin && !dia.salida) {
+            const inicioM = t.toMin(dia.almuerzo_inicio.hora);
+            if (nowM >= inicioM + 60 + CFG.INTERVALO && nowM <= inicioM + 60 + CFG.TOPE_FIN_ALMUERZO) {
+              const slot = Math.floor((nowM - inicioM - 60) / CFG.INTERVALO);
+              await recordar(uid, fecha, 'rec_alm_fin', slot, txt.recordatorios.almuerzoFin(dia.almuerzo_inicio.hora));
+            }
           }
         }
 
-        // 5. Horario de salida: DM de cierre con botón
+        // 5. Horario de salida: "¿Terminaste?" (3' para contestar)
         if (dia.entrada && !dia.salida && nowM >= salidaM && nowM <= salidaM + VENTANA_CIERRE && !db.getCierre(uid, fecha)) {
-          db.setCierre(uid, fecha, { estado: 'esperando', dm_hora: t.currentTime() });
-          await dm(uid, txt.cierre.dm(user.hora_salida), botonSalida(txt.cierre.dm(user.hora_salida)));
-          console.log(`[cierre] DM de cierre → ${user.nombre}`);
+          await preguntarCierre(user, fecha, true);
         }
 
         // 6. Estados del cierre
@@ -145,16 +175,16 @@ const setupScheduler = (app) => {
         // La persona marcó salida por otra vía → cerrar el flujo
         if (dia.salida) { db.setCierre(uid, fecha, { estado: 'cerrado' }); continue; }
 
-        if (cierre.estado === 'esperando') {
-          const dmM = t.toMin(cierre.dm_hora);
-          if (nowM >= dmM + CFG.TIMEOUT_CIERRE) {
-            // Sin respuesta → auto-cierre por última actividad
-            await autoCerrar(user, fecha);
-          } else if (nowM >= dmM + CFG.INTERVALO) {
-            // Recordatorios intermedios (a +10' y +20') con el botón
-            const slot = Math.floor((nowM - dmM) / CFG.INTERVALO);
-            await recordar(uid, fecha, 'rec_cierre', slot, txt.cierre.recordatorio, botonSalida(txt.cierre.recordatorio));
-          }
+        const { respuesta, sigo } = pruebas.tiempos(uid);
+        if (nowM >= CFG.CIERRE_LIMITE) {
+          await autoCerrar(user, fecha, cierre);
+        } else if (cierre.estado === 'preguntado' || cierre.estado === 'esperando') {
+          // Sin respuesta a tiempo → auto-cierre por última actividad en Slack
+          // ('esperando' = estado del flujo viejo, por si quedó uno abierto al deployar)
+          if (nowM >= t.toMin(cierre.pregunta_hora || cierre.dm_hora) + respuesta) await autoCerrar(user, fecha, cierre);
+        } else if (cierre.estado === 'extendido') {
+          // Dijo "sigo trabajando" → volver a preguntar a los 20'
+          if (nowM >= t.toMin(cierre.ultima_respuesta) + sigo) await preguntarCierre(user, fecha, false);
         }
       } catch (err) {
         console.error(`[scheduler] Error con ${user.nombre}: ${err.message}`);
@@ -168,11 +198,13 @@ const setupScheduler = (app) => {
     }
   };
 
-  cron.schedule('* * * * 1-5', () => tick().catch(e => console.error('[scheduler] tick:', e)), { timezone: t.TZ });
+  // Todos los días: el tick se saltea finde/feriados salvo para quien está en modo prueba
+  cron.schedule('* * * * *', () => tick().catch(e => console.error('[scheduler] tick:', e)), { timezone: t.TZ });
   setupScheduler._tick = tick; // expuesto para tests
+  pruebas.setTick(tick);
 
-  // ─── Presencia cada 15 min ─────────────────────────────────────────
-  cron.schedule('*/15 * * * 1-5', () => runPresenceCheck(app, soloUsers).catch(e => console.error('[presencia]', e)), { timezone: t.TZ });
+  // ─── Actividad en Slack: presencia cada 2 min (≈32 personas → ~16 llamadas/min, tier 3 de Slack) ─
+  cron.schedule('*/2 * * * *', () => runPresenceCheck(app, soloUsers).catch(e => console.error('[presencia]', e)), { timezone: t.TZ });
 
   // ─── Pings dirigidos (tick por minuto, solo con modo activo) ──────
   cron.schedule('* * * * 1-5', () => runPingCycle(app, soloUsers).catch(e => console.error('[pings]', e)), { timezone: t.TZ });
@@ -232,8 +264,9 @@ const setupScheduler = (app) => {
   }, { timezone: t.TZ });
 
   console.log('[scheduler] Cron configurado (TZ America/Argentina/Buenos_Aires):');
-  console.log(`  → Recordatorios cada ${CFG.INTERVALO}': entrada (tope ${CFG.TOPE_ENTRADA}'), almuerzo (13:30-15:00), fin almuerzo, cierre (auto a los ${CFG.TIMEOUT_CIERRE}')`);
-  console.log('  → Presencia Slack: cada 15 min en horario laboral de cada persona');
+  console.log(`  → Recordatorios cada ${CFG.INTERVALO}': entrada (tope ${CFG.TOPE_ENTRADA}'), almuerzo (13:30-15:00), fin almuerzo`);
+  console.log(`  → Cierre: "¿terminaste?" a su salida (viernes ${db.SALIDA_VIERNES}), ${pruebas.TIEMPOS.respuesta}' para contestar; "sigo" → repregunta cada ${pruebas.TIEMPOS.sigo}'`);
+  console.log('  → Actividad Slack: presencia cada 2 min (L-V 07:00-23:00) + mensajes/reacciones en canales');
   console.log('  → Pings dirigidos: solo con modo activado por admin');
   console.log('  → Resumen diario (solo anomalías) + patrones: L-V 19:00');
   console.log('  → Resumen ejecutivo: lunes 09:00');

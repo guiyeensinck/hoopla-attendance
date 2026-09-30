@@ -1,35 +1,56 @@
 const t = require('./time');
 const db = require('./database');
 const txt = require('./texts');
+const pruebas = require('./pruebas');
 
 const PING_TIMEOUT_MIN = 10;
 const PINGS_POR_DIA = 3;
 
 // ═══════════════════════════════════════════════════════════════════
-// PRESENCIA — polling cada 15 min, solo dentro del horario personal
+// PRESENCIA — cada 2 min de 07:00 a 23:00 (también fuera de horario, para
+// ver cuándo arranca y termina de verdad la actividad en Slack). Solo los
+// checks dentro del horario cuentan para el % de presencia.
 // ═══════════════════════════════════════════════════════════════════
+const PRESENCIA_DESDE = 7 * 60;
+const PRESENCIA_HASTA = 23 * 60;
+
 const runPresenceCheck = async (app, soloUsers = null) => {
   const fecha = t.today();
-  if (!t.isWeekday(fecha) || db.isFeriado(fecha)) return;
   const nowM = t.nowMin();
+  if (nowM < PRESENCIA_DESDE || nowM > PRESENCIA_HASTA) return;
+  const habil = t.isWeekday(fecha) && !db.isFeriado(fecha);
   let checked = 0;
 
-  for (const user of db.getTracked()) {
-    if (soloUsers && !soloUsers.includes(user.slack_id)) continue;
-    if (db.esSoloProyectos(user)) continue; // sin monitoreo de presencia
-    if (db.isExento(user.slack_id, fecha)) continue;
-    // Solo dentro del horario laboral de cada persona
-    if (nowM < t.toMin(user.hora_entrada) || nowM >= t.toMin(user.hora_salida)) continue;
+  for (const base of db.getTracked()) {
+    // Finde/feriado: solo quien está en modo prueba (para poder probar el cierre)
+    if (!habil && !pruebas.get(base.slack_id)) continue;
+    if (soloUsers && !soloUsers.includes(base.slack_id) && !pruebas.get(base.slack_id)) continue;
+    if (db.esSoloProyectos(base)) continue; // sin monitoreo de presencia
+    if (db.isExento(base.slack_id, fecha)) continue;
+    const user = db.horarioDia(base, fecha);
+    const enHorario = nowM >= t.toMin(user.hora_entrada) && nowM < t.toMin(user.hora_salida);
 
     try {
       const r = await app.client.users.getPresence({ user: user.slack_id });
-      db.logPresencia(user.slack_id, fecha, t.currentTime(), r.presence);
+      db.logPresencia(user.slack_id, fecha, t.currentTime(), r.presence, enHorario);
       checked++;
     } catch (err) {
       console.error(`[presencia] Error con ${user.slack_id}: ${err.message}`);
     }
   }
   if (checked) console.log(`[presencia] ${checked} checks a las ${t.currentTime()}`);
+};
+
+/**
+ * Mensaje o reacción de una persona trackeada en un canal: se guarda
+ * SOLO la hora (nunca el contenido) como señal de actividad en Slack.
+ */
+const registrarActividad = (userId, ts, tipo) => {
+  if (!userId || !ts) return;
+  const user = db.getUser(userId);
+  if (!user?.trackeado || db.esSoloProyectos(user)) return;
+  const cuando = t.dayjs.unix(Number(ts)).tz(t.TZ);
+  db.logActividad(userId, cuando.format('YYYY-MM-DD'), cuando.format('HH:mm'), tipo);
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -71,7 +92,7 @@ const runPingCycle = async (app, soloUsers = null) => {
     const dia = db.getDia(user.slack_id, fecha);
     if (!dia.entrada || dia.salida) continue;
     if (dia.almuerzo_inicio && !dia.almuerzo_fin) continue; // en almuerzo
-    if (nowM < t.toMin(user.hora_entrada) || nowM >= t.toMin(user.hora_salida)) continue;
+    if (nowM < t.toMin(user.hora_entrada) || nowM >= t.toMin(db.horarioDia(user, fecha).hora_salida)) continue;
 
     const slots = agendaDelDia(user, fecha);
     // Ventana de 3 min por si un tick se pierde; el flag evita duplicados
@@ -103,4 +124,4 @@ const runPingCycle = async (app, soloUsers = null) => {
   if (res.changes > 0) console.log(`[pings] ${res.changes} pings vencidos`);
 };
 
-module.exports = { runPresenceCheck, runPingCycle, PING_TIMEOUT_MIN };
+module.exports = { runPresenceCheck, registrarActividad, runPingCycle, PING_TIMEOUT_MIN };

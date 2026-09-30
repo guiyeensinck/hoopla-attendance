@@ -44,13 +44,12 @@ const setupWeb = (receiver, slackClient = null) => {
     const fecha = t.today();
     const dia = db.getDia(userId, fecha);
     const next = db.nextTipo(dia);
-    const corregible = !next && dia.salida?.auto_closed === 1 && !dia.salida.corregido;
 
-    if (!next && !corregible) {
+    if (!next) {
       res.send(renderResultado({ user, dia, titulo: txt.web.diaCompleto, detalle: null }));
       return;
     }
-    res.send(renderForm({ token: req.params.token, user, dia, next, corregible }));
+    res.send(renderForm({ token: req.params.token, user: db.horarioDia(user, fecha), dia, next }));
   });
 
   router.post('/:token', (req, res) => {
@@ -78,12 +77,6 @@ const setupWeb = (receiver, slackClient = null) => {
           + (tarde_min > 0 ? txt.marcar.confirmacionTarde(tarde_min) : ''));
         // Al marcar salida, preguntar en qué se fue el día
         if (next === 'salida' && slackClient) promptImputacion(slackClient, user, fecha);
-      } else if (dia.salida?.auto_closed === 1 && !dia.salida.corregido) {
-        // Corrección única del auto-cierre — el valor original queda loggeado
-        const original = dia.salida.hora;
-        db.corregirSalida(user, fecha, hora);
-        titulo = `${txt.web.corregido} — ${hora}`;
-        confirmarPorDM(userId, txt.marcar.confirmacionCorreccion(hora, original));
       } else {
         titulo = txt.web.diaCompleto;
       }
@@ -109,7 +102,7 @@ const setupWeb = (receiver, slackClient = null) => {
     const user = db.getUser(userId);
     const opciones = [...new Set([t.today(), t.haceDiasHabiles(1)])];
     const fecha = opciones.includes(fechaPedida) ? fechaPedida : fechaDestino(userId);
-    const trabajadas = db.horasDia(db.getDia(userId, fecha)) ?? user.carga_horaria;
+    const trabajadas = db.horasDia(db.getDia(userId, fecha)) ?? db.horarioDia(user, fecha).carga_horaria;
     return { user, fecha, opciones, trabajadas, existentes: db.getImputacionesDia(userId, fecha), proyectos: db.getProyectos(true) };
   };
 
@@ -192,19 +185,13 @@ const statusRows = (dia) => Object.entries(txt.TIPOS).map(([tipo, info]) => {
 const renderError = (titulo, detalle) => miniLayout('Error', `
   <div class="error-box"><h2>❌ ${titulo}</h2><p style="margin-top:0.75rem">${detalle}</p></div>`);
 
-const renderForm = ({ token, user, dia, next, corregible }) => {
-  const accion = next
-    ? `${txt.TIPOS[next].emoji} Registrar ${txt.TIPOS[next].label}`
-    : '✏️ Corregir salida (una sola vez)';
-  const nota = corregible
-    ? `<p style="text-align:center;font-size:0.8rem;color:var(--yellow);margin-bottom:1rem">⚠️ Tu salida fue cerrada automáticamente a las ${dia.salida.hora}. Al confirmar, se corrige a la hora actual y no se puede volver a cambiar.</p>`
-    : '';
+const renderForm = ({ token, user, dia, next }) => {
+  const accion = `${txt.TIPOS[next].emoji} Registrar ${txt.TIPOS[next].label}`;
   return miniLayout('Marcar', `
     <div class="verify-card">
       <h2>📋 ${user.nombre}</h2>
       <p style="text-align:center;color:var(--text-muted);font-size:0.85rem;margin-bottom:1.25rem">${t.fmtDate(t.today())} · Horario ${user.hora_entrada}–${user.hora_salida}</p>
       <div style="margin-bottom:1.25rem">${statusRows(dia)}</div>
-      ${nota}
       <form method="POST" action="/verify/${token}">
         <button type="submit" class="btn-primary">${accion}</button>
       </form>
