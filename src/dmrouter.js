@@ -29,6 +29,9 @@ const route = (raw) => {
   if (/^(imputar|cargar|cargo|cargue|termine|termino|cargar horas|mis horas de hoy)$/.test(texto)) {
     return { tipo: 'imputarweb' };
   }
+  if (/^(ayuda|help|como funciona|como funciona esto)\??$/.test(texto)) {
+    return { tipo: 'ayuda' };
+  }
   if (/^(proyectos|imputaciones)$/.test(texto)) {
     return { tipo: 'proyectos' };
   }

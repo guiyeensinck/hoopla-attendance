@@ -62,7 +62,7 @@ const setupScheduler = (app) => {
       nota: { actividad: 'auto_closed_ultima_actividad', respuesta: 'auto_closed_ultima_respuesta', sin_datos: 'auto_closed_sin_respuesta' }[motivo],
     });
     db.setCierre(uid, fecha, { estado: 'cerrado' });
-    const texto = txt.cierre.autoCerrado(hora, motivo);
+    const texto = txt.cierre.autoCerrado;
     await dm(uid, texto, [
       { type: 'section', text: { type: 'mrkdwn', text: texto } },
       { type: 'actions', elements: [
@@ -158,7 +158,7 @@ const setupScheduler = (app) => {
             const inicioM = t.toMin(dia.almuerzo_inicio.hora);
             if (nowM >= inicioM + 60 + CFG.INTERVALO && nowM <= inicioM + 60 + CFG.TOPE_FIN_ALMUERZO) {
               const slot = Math.floor((nowM - inicioM - 60) / CFG.INTERVALO);
-              await recordar(uid, fecha, 'rec_alm_fin', slot, txt.recordatorios.almuerzoFin(dia.almuerzo_inicio.hora));
+              await recordar(uid, fecha, 'rec_alm_fin', slot, txt.recordatorios.almuerzoFin());
             }
           }
         }

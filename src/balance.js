@@ -98,4 +98,32 @@ const semanaUsuario = (user) => {
   return { desde, hoy, dias, trabajadas: Math.round((trabajadas + parcial) * 10) / 10, esperadas, diff: Math.round(diff * 10) / 10, horaCompensa };
 };
 
-module.exports = { semanaUsuario, saldoMes, parcialHoy };
+/**
+ * Balance semanal para la persona, día a día y SIN horas:
+ * ✅ el día cumplió su carga (con la tolerancia de 10'), ❌ no la cumplió
+ * (o no hay registro), ⏳ hoy en curso, 🏖️ novedad/feriado. La semana es
+ * ✅ solo si ningún día tiene ❌. ok = null si todavía no hay días cerrados.
+ */
+const semanaChecks = (user) => {
+  const hoy = t.today();
+  const dias = [];
+  let d = t.dayjs(t.weekStart());
+  while (!d.isAfter(t.dayjs(hoy), 'day')) {
+    const fecha = d.format('YYYY-MM-DD');
+    d = d.add(1, 'day');
+    if (!t.isWeekday(fecha)) continue;
+    const dia = db.getDia(user.slack_id, fecha);
+    const horas = db.horasDia(dia);
+    let icono;
+    if (db.isExento(user.slack_id, fecha)) icono = '🏖️';
+    else if (fecha === hoy && !dia.salida) icono = '⏳';
+    else if (horas == null) icono = '❌';
+    else icono = horas >= db.horarioDia(user, fecha).carga_horaria - db.TOLERANCIA_MIN / 60 ? '✅' : '❌';
+    dias.push({ fecha, label: t.dayjs(fecha).format('ddd'), icono });
+  }
+  const evaluados = dias.filter(x => x.icono === '✅' || x.icono === '❌');
+  const ok = evaluados.length ? evaluados.every(x => x.icono === '✅') : null;
+  return { dias, ok, icono: ok === null ? '⏳' : ok ? '✅' : '❌' };
+};
+
+module.exports = { semanaUsuario, saldoMes, parcialHoy, semanaChecks };

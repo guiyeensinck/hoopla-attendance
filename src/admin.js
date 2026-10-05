@@ -461,7 +461,7 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
 \`admin probar horario\` — tu horario efectivo de hoy y del viernes
 \`admin probar reset\` — borra TODO tu día de hoy (marcaciones, cierre, imputaciones) para repetir
 \`admin probar fin\` — sale del modo prueba sin borrar nada
-_Los comandos \`/ayuda\`, \`/marcar\`, \`/cargar\`, \`/horarios\` los probás escribiéndolos en cualquier canal._`);
+_Para probar la charla, escribime como lo haría cualquiera ("llegué", "hoy estuve en Jumbo"). Ojo: como sos admin vos ves horarios y horas; el resto del equipo no._`);
           return;
         }
 

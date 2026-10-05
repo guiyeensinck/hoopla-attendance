@@ -3,7 +3,7 @@ const { App, ExpressReceiver } = require('@slack/bolt');
 const t = require('./time');
 const db = require('./database');
 const txt = require('./texts');
-const { semanaUsuario, saldoMes } = require('./balance');
+const { semanaUsuario, saldoMes, semanaChecks } = require('./balance');
 const { handleAdmin } = require('./admin');
 const { route } = require('./dmrouter');
 const { procesarImputacion, vistaProyectos, promptImputacion, btnMarcas } = require('./proyectos');
@@ -70,8 +70,7 @@ const adminTarget = () => (SOLO_MODE ? SOLO_USER_IDS[0] : (process.env.REPORT_CH
 
 // ═══════════════════════════════════════════════════════════════════
 // INTERACCIÓN — el bot es un "compañero": se le escribe directo por DM,
-// o con los comandos /ayuda, /marcar, /cargar, /horarios... (respuesta
-// efímera: solo la ve quien lo escribió).
+// como una charla. No hay comandos "/".
 // ═══════════════════════════════════════════════════════════════════
 
 /** "marcar" → link de un solo uso, expira en 5 minutos */
@@ -138,10 +137,18 @@ const resumenBlocks = (user) => {
   ];
 };
 
+/** "horarios": el detalle es control interno → admins; el resto ve solo ✅/❌ por día y de la semana */
+const mostrarEstado = (user, say) => (db.veHorarios(user.slack_id)
+  ? say({ text: 'Tu estado', blocks: resumenBlocks(user) })
+  : say(txt.chat.semana(semanaChecks(user))));
+
+/** "mi semana" (horas por proyecto en la web): solo admins */
+const mostrarSemanaWeb = (user, say) => (db.veHorarios(user.slack_id) ? enviarSemanaWeb(user, say) : say(txt.chat.sinHorarios));
+
 /** Cualquier otro mensaje → menú con botones (y hints de texto) */
 const enviarMenu = async (user, say) => {
   if (db.esSoloProyectos(user)) {
-    await say(`${txt.chat.menuSaludo(user.nombre)}\nEstás en modo *solo proyectos*: mandame tus horas del día (ej: \`Jumbo 4, Interno 2\`) o escribí *proyectos* para ver el catálogo y lo que llevás imputado.`);
+    await say(`${txt.chat.menuSaludo(user.nombre)}\nEstás en modo *solo proyectos*: contame en qué marcas trabajaste hoy o escribí *cargar*.`);
     return;
   }
   const hoy = t.today();
@@ -158,7 +165,7 @@ const enviarMenu = async (user, say) => {
   }
   if (reclamable) botones.push({ type: 'button', action_id: 'reclamo_abrir', value: hoy, text: { type: 'plain_text', text: txt.chat.btnReclamo } });
   if (db.getProyectos(true).length) botones.push(...btnMarcas().elements.map(b => ({ ...b, style: undefined })));
-  botones.push({ type: 'button', action_id: 'menu_semana', text: { type: 'plain_text', text: txt.chat.btnSemana } });
+  if (db.veHorarios(user.slack_id)) botones.push({ type: 'button', action_id: 'menu_semana', text: { type: 'plain_text', text: txt.chat.btnSemana } });
 
   const hints = [txt.chat.menuHint];
   if (db.isAdmin(user.slack_id)) hints.push(txt.chat.adminHint);
@@ -222,9 +229,10 @@ app.message(async ({ message, say, client }) => {
     }
 
     if (r.tipo === 'marcar') { await enviarLink(user, say); return; }
-    if (r.tipo === 'horarios') { await say({ text: 'Tu estado', blocks: resumenBlocks(user) }); return; }
+    if (r.tipo === 'horarios') { await mostrarEstado(user, say); return; }
+    if (r.tipo === 'ayuda') { await say(txt.ayuda); return; }
     if (r.tipo === 'proyectos') { await say(vistaProyectos(user)); return; }
-    if (r.tipo === 'misemana') { await enviarSemanaWeb(user, say); return; }
+    if (r.tipo === 'misemana') { await mostrarSemanaWeb(user, say); return; }
     if (r.tipo === 'imputarweb') { await enviarBotonCargar(user, say); return; }
 
     // ¿Es una imputación de horas a proyectos? ("Nike 4, Interno 2")
@@ -257,7 +265,7 @@ app.action('menu_marcar', async ({ body, ack, client }) => {
 app.action('menu_semana', async ({ body, ack, client }) => {
   await ack();
   const user = db.getUser(body.user.id);
-  if (user?.trackeado) await sayEnDM(client, user.slack_id)({ text: 'Tu estado', blocks: resumenBlocks(user) });
+  if (user?.trackeado) await mostrarEstado(user, sayEnDM(client, user.slack_id));
 });
 
 // "Cargar con clicks" — link fresco al formulario web de imputación.
@@ -276,7 +284,7 @@ const enviarBotonCargar = async (user, say) => {
     blocks: [
       { type: 'section', text: { type: 'mrkdwn', text: txt.marcas.abrir } },
       btnMarcas(),
-      { type: 'context', elements: [{ type: 'mrkdwn', text: `_¿Querés cargar el detalle por proyecto? <${url}|Formulario web>_` }] },
+      ...(db.veHorarios(user.slack_id) ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: `_¿Querés cargar el detalle por proyecto? <${url}|Formulario web>_` }] }] : []),
     ],
   });
 };
@@ -296,18 +304,18 @@ const enviarSemanaWeb = async (user, say) => {
 // Acciones que la IA puede ejecutar (las mismas que los comandos)
 const accionesIA = (user, say, client) => ({
   marcar: (s) => (db.esSoloProyectos(user) ? s('ℹ️ Estás en modo *solo proyectos*: no marcás asistencia.') : enviarLink(user, s)),
-  estado: (s) => s({ text: 'Tu estado', blocks: resumenBlocks(user) }),
+  estado: (s) => mostrarEstado(user, s),
   cargar: (s) => enviarBotonCargar(user, s),
   imputar: (texto) => procesarImputacion(user, texto),
   proyectos: (s) => s(vistaProyectos(user)),
-  semanaWeb: (s) => enviarSemanaWeb(user, s),
+  semanaWeb: (s) => mostrarSemanaWeb(user, s),
   reclamo: async (s) => {
     const hoy = t.today();
     const salida = db.getDia(user.slack_id, hoy).salida;
     if (!salida?.auto_closed || salida.corregido) { await s(txt.reclamo.noAplica); return; }
     if (db.reclamoPendiente(user.slack_id, hoy)) { await s(txt.reclamo.yaPendiente); return; }
-    await s({ text: txt.reclamo.intro(salida.hora), blocks: [
-      { type: 'section', text: { type: 'mrkdwn', text: txt.reclamo.intro(salida.hora) } },
+    await s({ text: txt.reclamo.intro, blocks: [
+      { type: 'section', text: { type: 'mrkdwn', text: txt.reclamo.intro } },
       { type: 'actions', elements: [{ type: 'button', action_id: 'reclamo_abrir', value: hoy, text: { type: 'plain_text', text: txt.chat.btnReclamo } }] },
     ] });
   },
@@ -317,7 +325,7 @@ const accionesIA = (user, say, client) => ({
 app.action('semana_web', async ({ body, ack, client }) => {
   await ack();
   const user = db.getUser(body.user.id);
-  if (user?.trackeado) await enviarSemanaWeb(user, sayEnDM(client, user.slack_id));
+  if (user?.trackeado) await mostrarSemanaWeb(user, sayEnDM(client, user.slack_id));
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -339,13 +347,13 @@ app.action('cierre_salida', async ({ body, ack, client }) => {
   if (!user) return;
 
   const dia = db.getDia(uid, fecha);
-  if (dia.salida) { await updateMsg(client, body, txt.cierre.yaCerrado(dia.salida.hora)); return; }
+  if (dia.salida) { await updateMsg(client, body, txt.cierre.yaCerrado); return; }
 
   const hora = t.currentTime();
   db.imputarAlmuerzo(user, fecha);
   db.registrar(user, fecha, 'salida', hora, 'slack');
   db.setCierre(uid, fecha, { estado: 'cerrado' });
-  await updateMsg(client, body, txt.cierre.salidaRegistrada(hora));
+  await updateMsg(client, body, txt.cierre.salidaRegistrada);
   await promptImputacion(client, user, fecha);
   console.log(`[cierre] ${user.nombre} marcó salida ${hora} (botón)`);
 });
@@ -356,9 +364,9 @@ app.action('cierre_sigo', async ({ body, ack, client }) => {
   const uid = body.user.id;
   const fecha = t.today();
   const dia = db.getDia(uid, fecha);
-  if (dia.salida) { await updateMsg(client, body, txt.cierre.yaCerrado(dia.salida.hora)); return; }
+  if (dia.salida) { await updateMsg(client, body, txt.cierre.yaCerrado); return; }
   const cierre = db.getCierre(uid, fecha);
-  if (!cierre || cierre.estado === 'cerrado') { await updateMsg(client, body, txt.cierre.yaCerrado()); return; }
+  if (!cierre || cierre.estado === 'cerrado') { await updateMsg(client, body, txt.cierre.yaCerrado); return; }
 
   const hora = t.currentTime();
   db.setCierre(uid, fecha, { estado: 'extendido', ultima_respuesta: hora });
@@ -378,7 +386,7 @@ app.action('reclamo_abrir', async ({ body, action, ack, client }) => {
   if (!salida?.auto_closed || salida.corregido) { await avisar(txt.reclamo.noAplica); return; }
   if (db.reclamoPendiente(uid, fecha)) { await avisar(txt.reclamo.yaPendiente); return; }
 
-  const sugerida = fecha === t.today() ? t.currentTime() : salida.hora;
+  const sugerida = fecha === t.today() ? t.currentTime() : db.horarioDia(db.getUser(uid), fecha).hora_salida;
   await client.views.open({
     trigger_id: body.trigger_id,
     view: {
@@ -388,7 +396,7 @@ app.action('reclamo_abrir', async ({ body, action, ack, client }) => {
       submit: { type: 'plain_text', text: 'Enviar' },
       close: { type: 'plain_text', text: 'Cancelar' },
       blocks: [
-        { type: 'section', text: { type: 'mrkdwn', text: txt.reclamo.intro(salida.hora) } },
+        { type: 'section', text: { type: 'mrkdwn', text: txt.reclamo.intro } },
         { type: 'input', block_id: 'hora', label: { type: 'plain_text', text: txt.reclamo.labelHora },
           element: { type: 'timepicker', action_id: 'hora', initial_time: sugerida } },
         { type: 'input', block_id: 'motivo', label: { type: 'plain_text', text: txt.reclamo.labelMotivo },
@@ -409,9 +417,10 @@ app.view('reclamo_submit', async ({ ack, body, view, client }) => {
     await ack({ response_action: 'errors', errors: { hora: txt.reclamo.noAplica } });
     return;
   }
+  // No se valida contra la hora del auto-cierre: la persona no la conoce (el admin sí la ve)
   const enFuturo = fecha === t.today() && hora > t.currentTime();
-  if (!hora || hora <= salida.hora || enFuturo) {
-    await ack({ response_action: 'errors', errors: { hora: txt.reclamo.horaInvalida(salida.hora) } });
+  if (!hora || enFuturo) {
+    await ack({ response_action: 'errors', errors: { hora: txt.reclamo.horaInvalida } });
     return;
   }
   await ack();
@@ -454,9 +463,8 @@ app.action(/^reclamo_(aprobar|rechazar)$/, async ({ body, action, ack, client })
     await updateMsg(client, body, txt.reclamo.aprobadoAdmin(nombre, r.hora_pedida, adminId));
     await client.chat.postMessage({ channel: r.user_id, text: txt.reclamo.aprobadoUser(t.fmtDate(r.fecha), r.hora_pedida) });
   } else {
-    const salida = db.getDia(r.user_id, r.fecha).salida;
     await updateMsg(client, body, txt.reclamo.rechazadoAdmin(nombre, adminId));
-    await client.chat.postMessage({ channel: r.user_id, text: txt.reclamo.rechazadoUser(t.fmtDate(r.fecha), salida?.hora || '—') });
+    await client.chat.postMessage({ channel: r.user_id, text: txt.reclamo.rechazadoUser(t.fmtDate(r.fecha)) });
   }
   console.log(`[reclamo] #${r.id} ${aprobar ? 'aprobado' : 'rechazado'} por ${adminId}`);
 });
@@ -491,47 +499,6 @@ app.action('ping_respond', async ({ body, action, ack, client }) => {
   await updateMsg(client, body, seg !== null ? txt.pings.respondido(seg) : txt.pings.expirado);
 });
 
-// ═══════════════════════════════════════════════════════════════════
-// COMANDOS "/" — respuesta efímera (solo la ve quien escribió el comando)
-// ═══════════════════════════════════════════════════════════════════
-const comando = (nombre, fn, { requiereTracking = true } = {}) =>
-  app.command(nombre, async ({ command, ack, respond, client }) => {
-    await ack();
-    const say = (msg) => respond({ response_type: 'ephemeral', ...(typeof msg === 'string' ? { text: msg } : msg) });
-    try {
-      const user = db.getUser(command.user_id);
-      if (requiereTracking && !user?.trackeado) {
-        await say(db.isAdmin(command.user_id) ? txt.marcar.noTrackeadoAdmin : txt.marcar.noTrackeado);
-        return;
-      }
-      await fn({ command, user, say, client });
-    } catch (e) {
-      console.error(`[cmd] ${nombre}:`, e);
-    }
-  });
-
-const soloProyectosAviso = 'ℹ️ Estás en modo *solo proyectos* — no hace falta que marques asistencia. Usá `/cargar` para cargar tus horas.';
-
-comando('/ayuda', async ({ command, say }) => {
-  await say(txt.ayuda + (db.isAdmin(command.user_id) ? `\n\n${txt.chat.adminHint} _(o \`/admin\`)_` : ''));
-}, { requiereTracking: false });
-comando('/marcar', async ({ user, say }) => {
-  if (db.esSoloProyectos(user)) { await say(soloProyectosAviso); return; }
-  await enviarLink(user, say);
-});
-comando('/horarios', async ({ user, say }) => {
-  if (db.esSoloProyectos(user)) { await say(soloProyectosAviso); return; }
-  await say({ text: 'Tu estado', blocks: resumenBlocks(user) });
-});
-comando('/cargar', async ({ command, user, client }) => {
-  await marcas.abrirModal(client, command.trigger_id, user);
-});
-comando('/proyectos', async ({ user, say }) => { await say(vistaProyectos(user)); });
-comando('/misemana', async ({ user, say }) => { await enviarSemanaWeb(user, say); });
-comando('/admin', async ({ command, say, client }) => {
-  await handleAdmin({ texto: command.text, adminId: command.user_id, say, client });
-}, { requiereTracking: false });
-
 // Reacciones en canales donde está el bot: también son actividad en Slack
 app.event('reaction_added', async ({ event }) => {
   try { registrarActividad(event.user, event.event_ts, 'reaccion'); } catch (e) { console.error('[actividad]', e.message); }
@@ -557,7 +524,7 @@ app.event('reaction_added', async ({ event }) => {
   }
 
   console.log(`\n  ⚡ Hoopla Asistencia — puerto ${PORT}`);
-  console.log(`  → Eventos Slack:  POST /slack/events (DMs, comandos /, botones, modales)`);
+  console.log(`  → Eventos Slack:  POST /slack/events (DMs, botones, modales, actividad en canales)`);
   console.log(`  → Dashboard:      /dashboard`);
   console.log(`  → Marcación:      /verify/:token`);
   if (SOLO_MODE) console.log(`  → 🧪 SOLO_MODE: ${SOLO_USER_IDS.join(', ')}`);

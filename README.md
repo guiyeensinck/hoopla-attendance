@@ -12,7 +12,7 @@ App de Slack para el registro de asistencia del equipo (~32 personas): entrada, 
 Cada persona tiene **su** horario de entrada, salida y carga horaria (default 9:30–18:30, 8hs). **Los viernes todos salen a las 17:30** (quien sale antes mantiene su horario) y se esperan las horas que correspondan (9:30–18:30 → 7hs el viernes); el balance semanal, el saldo del mes y los reportes ya lo contemplan. El admin los carga escribiéndole al bot `admin horario @user HH:MM HH:MM Nhs`. Todos los cálculos (llegada tarde, salida anticipada, balance, auto-cierre, recordatorios) usan el horario individual.
 
 ### Interacción: el bot es "un compañero más"
-Cada persona abre el DM del bot (aparece en su sidebar desde el onboarding) y **le escribe como a un colega**: `marcar`, `horarios`, `cargar`, o cualquier cosa — el bot contesta con un menú de botones. También hay **comandos `/`** que funcionan desde cualquier canal y responden de forma efímera (solo los ve quien los escribe): `/ayuda`, `/marcar`, `/cargar`, `/horarios`, `/proyectos`, `/misemana` y `/admin` (admins).
+Cada persona abre el DM del bot (aparece en su sidebar desde el onboarding) y **le habla como a un colega**: "llegué", "me voy a almorzar", "hoy estuve en Jumbo y Coral", "¿cómo funciona esto?". **No hay comandos `/`**: todo es charla. Con IA activa (ver *Modo conversacional*) el bot entiende frases libres y actúa; sin IA, reconoce palabras clave (`marcar`, `cargar`, `ayuda`) y si no, muestra un menú con botones.
 
 ### Marcaciones
 4 por día: **entrada → inicio almuerzo → fin almuerzo → salida**. Horas trabajadas = salida − entrada − almuerzo.
@@ -28,16 +28,19 @@ Cada persona abre el DM del bot (aparece en su sidebar desde el onboarding) y **
 ### Excepción mobile
 `admin remoto @user FECHA` (por DM al bot) habilita a esa persona a fichar desde el celular ese día. Queda diferenciado en reportes como origen `mobile_remoto`.
 
-### Visibilidad (modelo transparente)
-Cada persona ve **su propio estado** — nunca datos de otros:
-- Página post-registro: marcaciones del día + desglose semanal con semáforo (🟢🟡🔴) contra su carga horaria + hasta qué hora quedarse si va atrás.
-- Escribirle **`horarios`** al bot: el mismo resumen en Slack.
-- El balance se resetea **cada lunes**.
+### Visibilidad (control interno)
+Los horarios registrados, las horas trabajadas, el saldo y la actividad en Slack son **un control interno: solo los ven los admins** (`db.veHorarios`).
+- La persona ve confirmaciones sin hora ("✅ Entrada registrada", "cerré tu día automáticamente"), su horario asignado y en qué marcas cargó su día (en %).
+- **Su semana, día a día y sin horas**: ✅ el día cumplió su carga (con 10' de tolerancia), ❌ no la cumplió o no tiene registro, ⏳ hoy en curso, 🏖️ novedad. La semana es ✅ solo si ningún día tiene ❌. Lo ve preguntándole al bot ("¿cómo vengo?") y en la página después de marcar.
+- `horarios` con detalle, `mi semana`, el formulario web por horas y el saldo del mes quedan solo para admins.
+- **IA**: recibe los horarios y horas de la persona (la semana completa) para entender y explicar ("¿por qué el martes me dio ❌?"), pero tiene prohibido decirlos y **el servidor revisa cada respuesta**: si menciona una hora que no sea su horario asignado, o cualquier cantidad de horas/minutos que no sea una regla general (3' / 10' / 20', 1 hora de almuerzo, su carga diaria), se la hace reescribir; si insiste, responde que eso lo lleva administración.
+- El reclamo de un auto-cierre no muestra la hora del cierre; el admin la ve al aprobar.
+- El onboarding no detalla el registro de actividad en Slack.
 
 ### Cierre del día
 A su horario de salida (viernes 17:30) el bot le pregunta a cada persona **"¿Terminaste?"** con dos botones:
 - **✅ Terminé** → registra la salida con hora del servidor.
-- **💪 Sigo trabajando** → la jornada sigue y el bot **vuelve a preguntar cada 20 minutos**. Las horas extra suman al balance.
+- **💪 Sigo trabajando** → la jornada sigue y el bot **vuelve a preguntar cada 20 minutos**. Las horas extra suman al balance (que ven los admins).
 - **Sin respuesta en 3 minutos** → cierre automático en la **última actividad en Slack**: último check de presencia "activo" o último mensaje/reacción en un canal (la interacción con el bot y las marcaciones **no** cuentan). Nunca pasa de la hora de la pregunta que quedó sin responder. Si había dicho "sigo", su última respuesta es el piso. Sin ninguna señal ese día, se estampa su horario.
 - Si la salida quedó después de las 14:00 y falta el almuerzo, se imputa 13:00–14:00.
 - A las 23:50 se cierra cualquier jornada que siga abierta.
@@ -71,7 +74,7 @@ Los recordatorios a la persona se repiten **cada 10 minutos** hasta que marca (u
 ### Management por excepción (para dirección)
 - **Detección de patrones** (con el resumen de las 19:00, cada patrón se avisa 1 vez por semana por persona, analizando los últimos 10 días hábiles): ⏰ 3+ llegadas tarde de ≥10 min · 🔒 3+ auto-cierres (no marca salida) · 📉 saldo mensual ≤ −4hs · 👻 fichó pero presencia en Slack <30% en 3+ días (con datos suficientes). Umbrales ajustables en `src/patrones.js`.
 - **Ficha de persona** (`admin persona @user`): últimos 10 días hábiles — horas vs esperadas, entrada promedio, tardes, auto-cierres, % presencia, saldo del mes y novedades. Contexto instantáneo para una 1:1.
-- **Banco de horas**: saldo mensual acumulado por persona (trabajadas − esperadas del 1° a hoy). Cada persona ve el suyo en `horarios`; el admin lo ve en la ficha y en los patrones.
+- **Banco de horas**: saldo mensual acumulado por persona (trabajadas − esperadas del 1° a hoy). Solo lo ven los admins: en la ficha y en los patrones.
 - **Equipos** (`admin equipo @user Nombre`): los reportes semanal/mensual y el resumen ejecutivo agrupan y totalizan por equipo; el dashboard muestra el equipo en el roster.
 
 ### Modo "solo proyectos"
@@ -79,14 +82,14 @@ Los recordatorios a la persona se repiten **cada 10 minutos** hasta que marca (u
 
 ### Qué se le puede escribir al bot (todo por DM)
 
-**Para todos** (también como comandos `/` desde cualquier canal: `/ayuda`, `/marcar`, `/cargar`, `/horarios`, `/proyectos`, `/misemana`):
-- `/ayuda` — explica cómo funciona todo
+**Para todos** (palabras clave; con IA también cualquier frase):
+- `ayuda` — explica cómo funciona todo
 - `marcar` (también `entrada`, `salida`, `almuerzo`, `fichar`) — link para registrar la próxima marcación
-- `horarios` (también `estado`, `semana`, `balance`) — estado de hoy + balance semanal propio
+- `horarios` (también `estado`, `semana`, `balance`) — **solo admins**: estado de hoy + balance semanal propio
 - `proyectos` — proyectos activos + lo imputado hoy y esta semana
-- `cargar` (o `/cargar`) — abre "¿En qué marcas trabajaste?" (marcas + %)
+- `cargar` — botón para "¿En qué marcas trabajaste?" (marcas + %)
 - `Nike 4 redes, Interno 2` — imputa el día a proyectos (pares nombre + horas; la categoría de trabajo es opcional: campaña, redes, website, branding, btl, ajustes, otro)
-- Cualquier otra cosa → menú con botones **Marcar** y **Mi semana**
+- Cualquier otra cosa → la IA (si está activa) o un menú con botones **Marcar** y **Cargar mi día** (+ **Mi semana** para admins)
 
 **Admin (`admin ...`, siempre con @mención, nunca nombre tipeado):**
 - `admin agregarme` · `admin agregartodos` · `admin agregar @user` · `admin sacar @user`
@@ -119,7 +122,7 @@ El admin mantiene el catálogo (`admin proyecto agregar Cliente / Proyecto` — 
 2. Al elegirlas aparece un **%** por marca, repartido en partes iguales. Se ajusta y tiene que sumar 100%.
 3. Las horas salen del % × las horas trabajadas del día (si la jornada no cerró, la carga del día). Guardar reemplaza lo imputado ese día. Si una marca tiene varios proyectos, las horas van a un proyecto general con el nombre del cliente, así que los reportes por cliente no cambian.
 
-Se abre también con `/cargar`, escribiendo `cargar` o desde el menú. El modo por texto sigue funcionando para quien lo prefiera — la persona responde en el mismo DM con lenguaje natural:
+Se abre también escribiendo `cargar` (o contándole al bot) o desde el menú. La persona solo ve porcentajes, nunca horas. El modo por texto sigue funcionando para quien lo prefiera — la persona responde en el mismo DM con lenguaje natural:
 
 ```
 2 horas Jumbo, 30 minutos Coral, 1/2 hora en Pitch, el resto en Interno
@@ -128,7 +131,7 @@ Se abre también con `/cargar`, escribiendo `cargar` o desde el menú. El modo p
 - El parser entiende horas ("2", "2.5", "2,5", "hora y media", "media hora"), minutos ("30 minutos"), fracciones ("1/2 hora"), preposiciones ("en", "de"), el formato corto (`Jumbo 3 redes, Interno 2`) y **"el resto en X"** (completa hasta las horas del día). También matchea nombres aproximados: cliente ("autopistas"), typos ("junbo"), espacios ("red bull" → Redbull) y apodos ("hoopla" → Interno, "nuevos negocios" → Pitch).
 - Si no puede matchear algo, **no guarda nada y pregunta** mostrando los candidatos posibles y el catálogo completo.
 - Alternativa con clicks: el botón **"🖱️ Cargar con clicks"** (en el prompt de salida y en `proyectos`) manda un link de un solo uso (30 min) a `/imputar/:token`, un formulario con selects de proyecto + categoría + horas, filas agregables y total en vivo. Anda desde el celular.
-- **"Mi semana en proyectos"**: cada persona puede ver su detalle (día por día, totales de semana y mes con barras) en una web personal `/misemana/:token` — se pide por DM escribiendo `mi semana` (o `mis horas`, `en qué trabajé`) o con el botón "📊 Mi semana en proyectos" que acompaña a `proyectos`. El link dura 30 min y se puede refrescar.
+- **"Mi semana en proyectos"** (solo admins): se puede ver su detalle (día por día, totales de semana y mes con barras) en una web personal `/misemana/:token` — se pide por DM escribiendo `mi semana` (o `mis horas`, `en qué trabajé`) o con el botón "📊 Mi semana en proyectos" que acompaña a `proyectos`. El link dura 30 min y se puede refrescar.
 - **Gestión web del catálogo** (admins): en `/dashboard/proyectos` se pueden crear, editar (cliente y nombre inline, las horas siguen al proyecto), archivar y reactivar proyectos. `admin proyectos` por DM incluye el link directo.
 
 ### Modo conversacional (opcional)
@@ -181,7 +184,7 @@ Protegido opcionalmente con `DASHBOARD_TOKEN` (basic auth).
 
 1. **Crear la app**: [api.slack.com/apps](https://api.slack.com/apps) → *Create New App* → *From scratch* → nombre `Hoopla Asistencia` → elegir workspace.
 
-2. **Manifest (recomendado)**: en *App Manifest* pegá [`slack-manifest.yml`](slack-manifest.yml) reemplazando `TU-DOMINIO` por tu dominio → *Save* → **reinstalar la app** (hay scopes nuevos) y actualizar `SLACK_BOT_TOKEN` si cambió. Eso configura de una los scopes, eventos, interactividad y comandos `/`. Si preferís hacerlo a mano, los pasos 2b–4 hacen lo mismo.
+2. **Manifest (recomendado)**: en *App Manifest* → pestaña **JSON**, pegá [`slack-manifest.json`](slack-manifest.json) (es el manifest real de la app "Presente", con el dominio de producción) → *Save* → **reinstalar la app** y actualizar `SLACK_BOT_TOKEN` si cambió. Eso configura de una scopes, eventos e interactividad. Si preferís hacerlo a mano, los pasos 2b–4 hacen lo mismo.
 
 2b. **Scopes** (*OAuth & Permissions → Bot Token Scopes*):
    ```
@@ -190,7 +193,6 @@ Protegido opcionalmente con `DASHBOARD_TOKEN` (basic auth).
    users:read        (nombres y presencia active/away)
    files:write       (subir el Excel mensual)
    im:write          (abrir DMs para el export)
-   commands          (comandos /ayuda, /marcar, /cargar, ...)
    channels:history  (hora de mensajes en canales públicos → actividad)
    groups:history    (ídem en canales privados donde esté el bot)
    reactions:read    (hora de reacciones → actividad)
@@ -206,11 +208,9 @@ Protegido opcionalmente con `DASHBOARD_TOKEN` (basic auth).
    reaction_added    (actividad por reacciones)
    ```
 
-3b. **Slash Commands**: crear `/ayuda`, `/marcar`, `/cargar`, `/horarios`, `/proyectos`, `/misemana` y `/admin`, todos con Request URL `https://TU-DOMINIO/slack/events` (en `/admin` tildar *Escape channels, users, and links*).
-
 4. **Interactivity** (*Interactivity & Shortcuts*): activar y poner Request URL `https://TU-DOMINIO/slack/events` (botones, modales de marcas y reclamos).
 
-5. **App Home** (*App Home*): en *Show Tabs*, activar **Messages Tab** y tildar *"Allow users to send Slash commands and messages from the messages tab"* — sin esto la gente no puede escribirle al bot. La pestaña Home puede quedar desactivada (no se usa).
+5. **App Home** (*App Home*): en *Show Tabs*, activar **Messages Tab** y tildar *"Allow users to send messages from the messages tab"* — sin esto la gente no puede escribirle al bot. La pestaña Home puede quedar desactivada (no se usa).
 
 6. **Presentación** (*Basic Information → Display Information*): nombre visible, ícono y descripción — es lo que el equipo ve en el DM, conviene que parezca "un compañero" (ej: nombre `Asistencia`, foto con onda).
 
@@ -270,7 +270,7 @@ Todo se puede probar sobre vos mismo, en producción, sin afectar al equipo. Ten
 | `admin probar reset` | Borra **todo tu día de hoy** (marcaciones, cierre, imputaciones, reclamos) para repetir |
 | `admin probar fin` | Sale del modo prueba sin borrar nada |
 
-Recorrido sugerido: `admin probar cierre rapido` → tocá **Sigo trabajando** → mandá un mensaje en algún canal → esperá la repregunta y no contestes → mirá `admin probar actividad` → tocá **🙋 Estaba trabajando** y aprobalo desde el canal admin → `admin probar reset`. Los comandos `/` se prueban escribiéndolos en cualquier canal.
+Recorrido sugerido: `admin probar cierre rapido` → tocá **Sigo trabajando** → mandá un mensaje en algún canal → esperá la repregunta y no contestes → mirá `admin probar actividad` → tocá **🙋 Estaba trabajando** y aprobalo desde el canal admin → `admin probar reset`. Ojo: como admin vos ves horarios y horas; para ver lo que ve el equipo, probalo con alguien que no sea admin (en beta, sumalo a `SOLO_USER_ID`).
 
 > El modo prueba vive en memoria: un redeploy lo apaga (los registros quedan hasta el `reset`).
 
@@ -289,7 +289,7 @@ Exponer con `ngrok http 3000` y usar `https://xxxx.ngrok.io/slack/events` en la 
 ```
 src/
 ├── app.js           # Bolt + DMs + comandos / + botones (menú, cierre, reclamos, pings) + modales
-├── dmrouter.js      # Interpreta lo que la gente le escribe al bot (marcar/horarios/admin)
+├── dmrouter.js      # Palabras clave de los DMs (marcar/cargar/ayuda/admin); el resto va a la IA
 ├── admin.js         # Mensajes "admin ..." (personas, novedades, monitoreo, reportes, export)
 ├── database.js      # Schema SQLite + queries (users, registros, tokens, novedades,
 │                    #   presencia, pings, cierres, intentos_mobile)

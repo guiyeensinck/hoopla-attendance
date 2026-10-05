@@ -268,6 +268,8 @@ const esSoloProyectos = (u) => u?.modo === 'solo_proyectos';
 const superAdmins = () => (process.env.ADMIN_USER_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
 const isSuperAdmin = (id) => superAdmins().includes(id);
 const isAdmin = (id) => isSuperAdmin(id) || getUser(id)?.es_admin === 1;
+// Horarios, horas y actividad registrados son un control interno: solo los ven los admins
+const veHorarios = (id) => isAdmin(id);
 
 // ═══════════════════════════════════════════════════════════════════
 // REGISTROS
@@ -897,7 +899,7 @@ const resumenPersonas = (from, to) => {
 
 module.exports = {
   db, TIPOS_ORDEN, NOVEDADES_EXENTAS,
-  upsertUser, getUser, getAllUsers, getTracked, setTracked, setAdmin, setHorario, setEquipo, setModo, esSoloProyectos, isAdmin, isSuperAdmin,
+  upsertUser, getUser, getAllUsers, getTracked, setTracked, setAdmin, setHorario, setEquipo, setModo, esSoloProyectos, isAdmin, isSuperAdmin, veHorarios,
   SALIDA_VIERNES, horarioDia, horasEsperadas,
   getDia, nextTipo, horasDia, registrar, imputarAlmuerzo, getDias,
   addNovedad, borrarNovedad, cargarNovedadRango, getNovedadesFecha, getNovedadesRange, isFeriado, getFeriados, hasNovedad, isExento, diasEsperados,

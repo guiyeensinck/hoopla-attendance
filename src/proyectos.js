@@ -239,6 +239,11 @@ const catalogoLineas = () => {
 /** Guarda pares resueltos y arma el resumen de confirmación */
 const guardarYResumir = (user, fecha, finales, origen = 'chat', nota) => {
   const habia = db.setImputaciones(user.slack_id, fecha, finales);
+  // Quien no es admin no ve horas (son control interno): solo qué marcas quedaron
+  if (!db.veHorarios(user.slack_id)) {
+    const dia = fecha === t.today() ? `hoy ${t.fmtDate(fecha)}` : `⚠️ *AYER ${t.fmtDate(fecha)}*`;
+    return txt.imputar.guardadoSimple(dia, [...new Set(finales.map(p => p.nombre))]);
+  }
   const total = Math.round(finales.reduce((s, p) => s + p.horas, 0) * 10) / 10;
   const trabajadas = db.horasDia(db.getDia(user.slack_id, fecha));
   const detalle = finales.map(p => `${p.nombre} ${p.horas}hs${p.categoria ? ` _(${p.categoria})_` : ''}`).join(' · ');
@@ -295,7 +300,9 @@ const procesarImputacion = (user, texto, { soloSiClaro = false } = {}) => {
     for (const f of fallos) lineas.push(txt.imputar.noEntendi(f));
     lineas.push('', `Proyectos disponibles:\n${catalogoLineas()}`);
     const url = `${process.env.APP_URL || ''}/imputar/${db.createToken(user.slack_id, 'imputar')}`;
-    lineas.push('', `${txt.imputar.reintento}\n👉 <${url}|Cargar mis horas con clicks>`);
+    lineas.push('', db.veHorarios(user.slack_id)
+      ? `${txt.imputar.reintento}\n👉 <${url}|Cargar mis horas con clicks>`
+      : txt.imputar.reintentoSimple);
     return lineas.join('\n');
   }
 
@@ -325,7 +332,7 @@ const procesarImputacion = (user, texto, { soloSiClaro = false } = {}) => {
     const base = horasBase(user, fecha);
     const usadas = Object.values(porClave).reduce((s, p) => s + p.horas, 0);
     const sobra = Math.round((base - usadas) * 100) / 100;
-    if (sobra <= 0) return txt.imputar.restoNegativo(base);
+    if (sobra <= 0) return txt.imputar.restoNegativo();
     porClave[clave(resto)] = { ...resto, horas: sobra };
   }
 
@@ -352,14 +359,14 @@ const vistaProyectos = (user) => {
   if (!activos.length) return { text: '🗂️ Todavía no hay proyectos cargados. (Los crea el admin con `admin proyecto agregar Nombre`.)' };
 
   const fecha = fechaDestino(user.slack_id);
+  const ve = db.veHorarios(user.slack_id);
   const hoy = db.getImputacionesDia(user.slack_id, fecha);
-  const semana = db.horasUsuarioPorProyecto(user.slack_id, t.weekStart(), t.today());
+  const semana = ve ? db.horasUsuarioPorProyecto(user.slack_id, t.weekStart(), t.today()) : [];
 
   const lineas = [`🗂️ *Proyectos activos:*\n${catalogoLineas()}`];
-  lineas.push('', `Para imputar tu día contame en qué trabajaste, por ejemplo: \`2 horas ${activos[0].nombre}, media hora ${activos[1]?.nombre || 'Interno'}, el resto en ${activos[2]?.nombre || 'Interno'}\``);
-  lineas.push(`_Podés agregar la categoría de trabajo: \`${activos[0].nombre} 4 redes\` (${CATEGORIAS.join(', ')})_`);
+  lineas.push('', 'Para cargar tu día tocá *Cargar mi día* o contame en qué marcas trabajaste.');
   if (hoy.length) {
-    lineas.push('', `*Tu ${t.fmtDate(fecha)}:* ${hoy.map(i => `${i.nombre} ${i.horas}hs`).join(' · ')}`);
+    lineas.push('', `*Tu ${t.fmtDate(fecha)}:* ${ve ? hoy.map(i => `${i.nombre} ${i.horas}hs`).join(' · ') : [...new Set(hoy.map(i => i.nombre))].join(', ')}`);
   }
   if (semana.length) {
     lineas.push(`*Tu semana:* ${semana.map(i => `${i.nombre} ${i.horas}hs`).join(' · ')}`);
@@ -369,8 +376,8 @@ const vistaProyectos = (user) => {
     text,
     blocks: [
       { type: 'section', text: { type: 'mrkdwn', text } },
-      { type: 'actions', elements: [...btnMarcas().elements, ...btnImputarWeb().elements] },
-      { type: 'context', elements: [{ type: 'mrkdwn', text: '_"Cargar mi día" es lo más rápido: elegís las marcas y el % de cada una. El formulario web sirve para el detalle por proyecto._' }] },
+      { type: 'actions', elements: ve ? [...btnMarcas().elements, ...btnImputarWeb().elements] : btnMarcas().elements },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: '_"Cargar mi día": elegís las marcas y el % de cada una._' }] },
     ],
   };
 };
@@ -382,10 +389,8 @@ const btnMarcas = () => ({
 });
 
 /** Manda el "¿en qué marcas trabajaste?" (sin chequeos — lo usa también "admin probar imputar") */
-const enviarPromptMarcas = async (client, user, fecha) => {
-  const horas = db.horasDia(db.getDia(user.slack_id, fecha));
-  const imputadas = Math.round(db.getImputacionesDia(user.slack_id, fecha).reduce((s, i) => s + i.horas, 0) * 10) / 10;
-  const text = txt.marcas.prompt(horas, imputadas);
+const enviarPromptMarcas = async (client, user) => {
+  const text = txt.marcas.prompt;
   await client.chat.postMessage({
     channel: user.slack_id,
     text,

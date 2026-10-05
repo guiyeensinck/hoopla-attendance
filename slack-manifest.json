@@ -1,0 +1,63 @@
+{
+    "display_information": {
+        "name": "Presente",
+        "description": "Marcá tu jornada en segundos, sin fricción.",
+        "background_color": "#006fff",
+        "long_description": "Marcá tu entrada, salida y almuerzo en segundos, directamente desde Slack.\r\nTambién podés indicar cuando estás trabajando fuera de tu computadora, manteniendo tu registro siempre actualizado.\r\n\r\nDiseñado para equipos que quieren orden sin complicarse"
+    },
+    "features": {
+        "bot_user": {
+            "display_name": "Presente",
+            "always_online": true
+        },
+        "agent_view": {
+            "suggested_prompts": []
+        }
+    },
+    "oauth_config": {
+        "scopes": {
+            "bot": [
+                "mpim:history",
+                "assistant:write",
+                "chat:write",
+                "emoji:read",
+                "files:write",
+                "im:history",
+                "im:read",
+                "im:write",
+                "im:write.topic",
+                "reactions:read",
+                "reactions:write",
+                "search:read.users",
+                "users:read",
+                "users:write",
+                "channels:history",
+                "groups:history",
+                "channels:read",
+                "channels:join"
+            ]
+        },
+        "pkce_enabled": false
+    },
+    "settings": {
+        "event_subscriptions": {
+            "request_url": "https://hoopla-attendance-production.up.railway.app/slack/events",
+            "bot_events": [
+                "app_home_opened",
+                "message.im",
+                "message.channels",
+                "message.groups",
+                "reaction_added"
+            ]
+        },
+        "interactivity": {
+            "is_enabled": true,
+            "request_url": "https://hoopla-attendance-production.up.railway.app/slack/events"
+        },
+        "org_deploy_enabled": false,
+        "socket_mode_enabled": false,
+        "token_rotation_enabled": false,
+        "app_level_token_rotation_enabled": false,
+        "is_mcp_enabled": false
+    }
+}

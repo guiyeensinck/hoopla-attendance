@@ -49,12 +49,12 @@ const opcion = (m) => ({ text: { type: 'plain_text', text: m.slice(0, 75) }, val
  * Slack toma los % recalculados (con el mismo block_id conservaría lo viejo).
  */
 const vista = ({ user, fecha, seleccion, pcts, version }) => {
-  const { horas, estimado } = horasDelDia(user, fecha);
   const marcas = db.getMarcas().slice(0, 100); // límite de opciones de Slack
   const esHoy = fecha === t.today();
 
   const blocks = [
-    { type: 'context', elements: [{ type: 'mrkdwn', text: `${esHoy ? 'Hoy' : '⚠️ *Día anterior*'} ${t.fmtDate(fecha)} · *${horas}hs* ${estimado ? '_(tu jornada todavía no cerró: uso tu carga del día)_' : 'trabajadas'}` }] },
+    // Sin horas: las horas del día son un control interno (ver db.veHorarios)
+    { type: 'context', elements: [{ type: 'mrkdwn', text: `${esHoy ? 'Hoy' : '⚠️ *Día anterior*'} ${t.fmtDate(fecha)}` }] },
     {
       type: 'input', block_id: 'marcas', dispatch_action: true,
       label: { type: 'plain_text', text: '¿En qué marcas trabajaste?' },
@@ -68,7 +68,7 @@ const vista = ({ user, fecha, seleccion, pcts, version }) => {
   ];
 
   if (seleccion.length) {
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*¿Cuánto le dedicaste a cada una?* Tiene que sumar *100%* (100% = ${horas}hs).` } });
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '*¿Cuánto le dedicaste a cada una?* Tiene que sumar *100%*.' } });
     for (const m of seleccion) {
       blocks.push({
         type: 'input', block_id: `pct|${version}|${m}`,
@@ -165,7 +165,7 @@ const guardar = (userId, view) => {
 
   db.setImputaciones(userId, meta.fecha, pares);
   const dia = meta.fecha === t.today() ? 'día' : `*${t.fmtDate(meta.fecha)}* (día anterior)`;
-  return { ok: true, texto: txt.marcas.guardado(dia, pares, horas) };
+  return { ok: true, texto: txt.marcas.guardado(dia, pares) };
 };
 
 module.exports = { CALLBACK, abrirModal, onSeleccion, guardar, partesIguales, vista };

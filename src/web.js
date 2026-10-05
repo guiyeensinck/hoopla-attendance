@@ -3,7 +3,7 @@ const t = require('./time');
 const db = require('./database');
 const txt = require('./texts');
 const { isMobileUA } = require('./verification');
-const { semanaUsuario } = require('./balance');
+const { semanaUsuario, semanaChecks } = require('./balance');
 const { promptImputacion, fechaDestino, guardarYResumir, CATEGORIAS } = require('./proyectos');
 const { miniLayout } = require('./styles');
 
@@ -45,11 +45,13 @@ const setupWeb = (receiver, slackClient = null) => {
     const dia = db.getDia(userId, fecha);
     const next = db.nextTipo(dia);
 
+    // Horarios y horas registrados: solo admins (para el resto, control interno)
+    const ve = db.veHorarios(userId);
     if (!next) {
-      res.send(renderResultado({ user, dia, titulo: txt.web.diaCompleto, detalle: null }));
+      res.send(ve ? renderResultado({ user, dia, titulo: txt.web.diaCompleto, detalle: null }) : renderListo(txt.web.diaCompleto, user));
       return;
     }
-    res.send(renderForm({ token: req.params.token, user: db.horarioDia(user, fecha), dia, next }));
+    res.send(renderForm({ token: req.params.token, user: db.horarioDia(user, fecha), dia, next, ve }));
   });
 
   router.post('/:token', (req, res) => {
@@ -70,11 +72,10 @@ const setupWeb = (receiver, slackClient = null) => {
       let titulo, detalle = null;
       if (next) {
         const { tarde_min, anticipado_min } = db.registrar(user, fecha, next, hora, mob.origen);
-        titulo = `${txt.web.registrado} — ${txt.TIPOS[next].label} ${hora}`;
+        titulo = db.veHorarios(userId) ? `${txt.web.registrado} — ${txt.TIPOS[next].label} ${hora}` : `${txt.web.registrado} — ${txt.TIPOS[next].label}`;
         if (tarde_min > 0) detalle = txt.web.tarde(tarde_min);
         if (anticipado_min > 0) detalle = txt.web.anticipado(anticipado_min);
-        confirmarPorDM(userId, txt.marcar.confirmacionDM(txt.TIPOS[next].emoji, txt.TIPOS[next].label, hora)
-          + (tarde_min > 0 ? txt.marcar.confirmacionTarde(tarde_min) : ''));
+        confirmarPorDM(userId, txt.marcar.confirmacionDM(txt.TIPOS[next].emoji, txt.TIPOS[next].label));
         // Al marcar salida, preguntar en qué se fue el día
         if (next === 'salida' && slackClient) promptImputacion(slackClient, user, fecha);
       } else {
@@ -82,7 +83,7 @@ const setupWeb = (receiver, slackClient = null) => {
       }
 
       dia = db.getDia(userId, fecha);
-      res.send(renderResultado({ user, dia, titulo, detalle }));
+      res.send(db.veHorarios(userId) ? renderResultado({ user, dia, titulo, detalle }) : renderListo(titulo, user));
     } catch (err) {
       console.error('[web] Error en POST /verify:', err.message);
       res.status(500).send(renderError('Error', 'Algo falló al registrar. Escribile "marcar" al bot en Slack y probá con un link nuevo.'));
@@ -106,9 +107,14 @@ const setupWeb = (receiver, slackClient = null) => {
     return { user, fecha, opciones, trabajadas, existentes: db.getImputacionesDia(userId, fecha), proyectos: db.getProyectos(true) };
   };
 
+  // El formulario por horas y "mi semana" muestran horas del día: solo admins.
+  // El resto carga por marcas y % desde Slack.
+  const soloAdmins = (res) => res.status(403).send(renderError('No disponible', 'Contale al bot en Slack en qué marcas trabajaste.'));
+
   imputar.get('/:token', (req, res) => {
     const userId = db.peekToken(req.params.token, 'imputar');
     if (!userId) { res.status(410).send(renderError(txt.web.linkInvalido, txt.imputar.webLinkInvalido)); return; }
+    if (!db.veHorarios(userId)) { soloAdmins(res); return; }
     res.send(renderImputar({ token: req.params.token, ...contextoImputar(userId, req.query.fecha), error: null }));
   });
 
@@ -116,6 +122,7 @@ const setupWeb = (receiver, slackClient = null) => {
     try {
       const userId = db.peekToken(req.params.token, 'imputar');
       if (!userId) { res.status(410).send(renderError(txt.web.linkInvalido, txt.imputar.webLinkInvalido)); return; }
+      if (!db.veHorarios(userId)) { soloAdmins(res); return; }
 
       const ctx = contextoImputar(userId, req.body.fecha);
       const proys = [].concat(req.body.proyecto || []);
@@ -156,6 +163,7 @@ const setupWeb = (receiver, slackClient = null) => {
   receiver.app.get('/misemana/:token', (req, res) => {
     const userId = db.peekToken(req.params.token, 'semana');
     if (!userId) { res.status(410).send(renderError(txt.web.linkInvalido, txt.imputar.semanaLinkInvalido)); return; }
+    if (!db.veHorarios(userId)) { soloAdmins(res); return; }
     const user = db.getUser(userId);
     const dias = fechasDesde(t.weekStart()).map(fecha => ({
       fecha,
@@ -185,13 +193,13 @@ const statusRows = (dia) => Object.entries(txt.TIPOS).map(([tipo, info]) => {
 const renderError = (titulo, detalle) => miniLayout('Error', `
   <div class="error-box"><h2>❌ ${titulo}</h2><p style="margin-top:0.75rem">${detalle}</p></div>`);
 
-const renderForm = ({ token, user, dia, next }) => {
+const renderForm = ({ token, user, dia, next, ve }) => {
   const accion = `${txt.TIPOS[next].emoji} Registrar ${txt.TIPOS[next].label}`;
   return miniLayout('Marcar', `
     <div class="verify-card">
       <h2>📋 ${user.nombre}</h2>
       <p style="text-align:center;color:var(--text-muted);font-size:0.85rem;margin-bottom:1.25rem">${t.fmtDate(t.today())} · Horario ${user.hora_entrada}–${user.hora_salida}</p>
-      <div style="margin-bottom:1.25rem">${statusRows(dia)}</div>
+      ${ve ? `<div style="margin-bottom:1.25rem">${statusRows(dia)}</div>` : ''}
       <form method="POST" action="/verify/${token}">
         <button type="submit" class="btn-primary">${accion}</button>
       </form>
@@ -199,7 +207,20 @@ const renderForm = ({ token, user, dia, next }) => {
     </div>`);
 };
 
-/** Página post-registro: marcaciones del día + desglose semanal con semáforo */
+/** Página post-registro para quien no es admin: solo la confirmación, sin horarios ni horas */
+const renderListo = (titulo, user) => {
+  const s = semanaChecks(user);
+  const semana = `<p style="text-align:center;font-size:1.05rem;margin-top:1rem">${s.dias.map(d => `${d.label} ${d.icono}`).join(' &nbsp;·&nbsp; ')}</p>
+      ${s.ok === null ? '' : `<p style="text-align:center;font-weight:600;margin-top:0.5rem">${s.ok ? '✅ Tu semana viene bien' : '❌ Tu semana tiene días que no llegaron a lo esperado'}</p>`}`;
+  return miniLayout('Listo', `
+    <div class="verify-card">
+      <h2>${titulo}</h2>
+      ${semana}
+      <p style="text-align:center;color:var(--text-muted);margin-top:0.75rem">${txt.web.listoDetalle}</p>
+    </div>`);
+};
+
+/** Página post-registro (admins): marcaciones del día + desglose semanal con semáforo */
 const renderResultado = ({ user, dia, titulo, detalle }) => {
   const semana = semanaUsuario(user);
 
