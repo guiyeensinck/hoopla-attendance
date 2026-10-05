@@ -14,7 +14,19 @@ const { agregarFila, planillaActiva } = require('./planilla');
 
 // Tipos tal como están en la planilla → novedad que se carga al aprobar
 const TIPOS = { 'Vacaciones': 'vacaciones', 'Dia personal': 'libre', 'Otro': 'licencia' };
-const AREAS = ['Diseño', 'Cuentas', 'Creatividad', 'Programacion', 'Administración'];
+const AREAS = ['Diseño', 'Cuentas', 'Creatividad', 'Programacion', 'Administración', 'Dirección', 'Community Manager', 'Filmmaker', 'Edición'];
+const ALIAS_AREAS = {
+  director: 'Dirección', directores: 'Dirección', direccion: 'Dirección',
+  cm: 'Community Manager', community: 'Community Manager', 'community managers': 'Community Manager', 'community manager': 'Community Manager',
+  programacion: 'Programacion', desarrollo: 'Programacion', diseno: 'Diseño', administracion: 'Administración',
+  filmmakers: 'Filmmaker', 'film maker': 'Filmmaker', video: 'Filmmaker',
+  edicion: 'Edición', editor: 'Edición', editores: 'Edición', editora: 'Edición', editoras: 'Edición',
+};
+const normalizarArea = (a) => {
+  const n = (a || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  if (!n) return null;
+  return AREAS.find(x => x.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase() === n) || ALIAS_AREAS[n] || a.trim();
+};
 const MAX_DIAS = 45;
 
 const diasEntre = (desde, hasta) => {
@@ -57,7 +69,7 @@ const completarEmailDesdeSlack = async (client, user) => {
  */
 const borrador = async ({ user, client, say, datos }) => {
   // Perfil: lo que venga en este pedido se guarda para la próxima
-  const area = datos.area && (AREAS.find(a => a.toLowerCase() === datos.area.toLowerCase()) || datos.area);
+  const area = normalizarArea(datos.area);
   db.setPerfil(user.slack_id, { dni: (datos.dni || '').replace(/\D/g, '') || null, email: datos.email, equipo: area });
   await completarEmailDesdeSlack(client, user);
   const u = db.getUser(user.slack_id);
@@ -76,6 +88,14 @@ const borrador = async ({ user, client, say, datos }) => {
   const { habiles, corridos } = diasEntre(desde, hasta);
   if (corridos > MAX_DIAS) return `Son ${corridos} días corridos: es demasiado para un solo pedido, confirmá las fechas.`;
   if (tipo === 'Otro' && !datos.comentarios) return 'Para "Otro" hace falta un comentario con el motivo: preguntáselo.';
+
+  // Nadie del mismo equipo puede pedir días que se pisen con ausencias APROBADAS de un compañero
+  const choques = db.solapamientosEquipo(u.slack_id, u.equipo, desde, hasta);
+  if (choques.length) {
+    await say(txt.solicitud.solapa(normalizarArea(u.equipo), choques.map(c => ({ desde: t.fmtDate(c.desde), hasta: t.fmtDate(c.hasta) }))));
+    console.log(`[solicitud] ${u.nombre}: ${desde}→${hasta} se pisa con ${choques.map(c => c.nombre).join(', ')} (${u.equipo})`);
+    return 'Ya se le explicó que esas fechas se pisan con días aprobados de alguien de su equipo (no digas quién). Ofrecele elegir otras fechas.';
+  }
 
   const id = db.crearSolicitud({ user_id: u.slack_id, tipo, desde, hasta, dias_habiles: habiles, dias_corridos: corridos, comentarios: datos.comentarios });
   const texto = txt.solicitud.resumen({ tipo, desde: t.fmtDate(desde), hasta: t.fmtDate(hasta), habiles, corridos, comentarios: datos.comentarios });
@@ -107,8 +127,15 @@ const filaPlanilla = (s, u) => [
 const enviar = async ({ id, uid, client, adminTarget }) => {
   const s = db.getSolicitud(id);
   if (!s || s.user_id !== uid) return { texto: txt.solicitud.noEncontrada };
-  if (!db.pasarSolicitud(id, 'borrador', 'pendiente')) return { texto: txt.solicitud.yaProcesada };
   const u = db.getUser(uid);
+  // Re-chequeo: a alguien del equipo le pudieron aprobar esas fechas mientras tanto
+  const choques = db.solapamientosEquipo(uid, u.equipo, s.desde, s.hasta);
+  if (choques.length) {
+    if (!db.pasarSolicitud(id, 'borrador', 'rechazada', 'auto')) return { texto: txt.solicitud.yaProcesada };
+    console.log(`[solicitud] #${id} rechazada automáticamente: se pisa con ${choques.map(c => c.nombre).join(', ')}`);
+    return { texto: txt.solicitud.solapa(normalizarArea(u.equipo), choques.map(c => ({ desde: t.fmtDate(c.desde), hasta: t.fmtDate(c.hasta) }))) };
+  }
+  if (!db.pasarSolicitud(id, 'borrador', 'pendiente')) return { texto: txt.solicitud.yaProcesada };
 
   let enPlanilla = false;
   if (planillaActiva()) {
@@ -138,21 +165,32 @@ const enviar = async ({ id, uid, client, adminTarget }) => {
   return { texto: txt.solicitud.enviada };
 };
 
-/** Aprobar: carga la novedad (vacaciones corridas; el resto, días hábiles) */
-const aprobar = ({ id, adminId }) => {
+/**
+ * Aprobar: carga la novedad (vacaciones corridas; el resto, días hábiles)
+ * y rechaza solos los pedidos pendientes del mismo equipo que se pisan
+ * (devuelve cuáles, para avisarles).
+ */
+const aprobar = ({ id, adminId, comentario }) => {
   const s = db.getSolicitud(id);
   if (!s || !db.pasarSolicitud(id, 'pendiente', 'aprobada', adminId)) return null;
+  db.setRespuestaSolicitud(id, comentario);
   const tipoNov = TIPOS[s.tipo] || 'licencia';
   const corridos = tipoNov === 'vacaciones' || tipoNov === 'licencia';
   db.cargarNovedadRango(s.user_id, tipoNov, s.desde, corridos ? s.dias_corridos : s.dias_habiles, {
     motivo: s.comentarios || `Solicitud #${s.id}`, creadoPor: adminId,
   });
-  return s;
+  const autoRechazadas = [];
+  const equipo = db.getUser(s.user_id)?.equipo;
+  for (const otra of db.pendientesQueSePisan(s.user_id, equipo, s.desde, s.hasta)) {
+    if (db.pasarSolicitud(otra.id, 'pendiente', 'rechazada', 'auto')) autoRechazadas.push(otra);
+  }
+  return { ...s, autoRechazadas };
 };
 
-const rechazar = ({ id, adminId }) => {
+const rechazar = ({ id, adminId, comentario }) => {
   const s = db.getSolicitud(id);
   if (!s || !db.pasarSolicitud(id, 'pendiente', 'rechazada', adminId)) return null;
+  db.setRespuestaSolicitud(id, comentario);
   return s;
 };
 
@@ -170,4 +208,4 @@ const contextoSolicitudes = (user) => {
   return `Pedidos de días: ${faltan.length ? `para pedir le falta darnos: ${faltan.join(', ')}` : 'perfil completo'}. Recientes: ${recientes || 'ninguno'}.`;
 };
 
-module.exports = { TIPOS, AREAS, borrador, enviar, aprobar, rechazar, cancelar, contextoSolicitudes, filaPlanilla, diasEntre };
+module.exports = { TIPOS, AREAS, normalizarArea, borrador, enviar, aprobar, rechazar, cancelar, contextoSolicitudes, filaPlanilla, diasEntre };

@@ -451,31 +451,6 @@ app.view('reclamo_submit', async ({ ack, body, view, client }) => {
   console.log(`[reclamo] ${user?.nombre || uid} ${fecha}: ${salida.hora} → ${hora}`);
 });
 
-app.action(/^reclamo_(aprobar|rechazar)$/, async ({ body, action, ack, client }) => {
-  await ack();
-  const adminId = body.user.id;
-  if (!db.isAdmin(adminId)) {
-    await client.chat.postEphemeral({ channel: body.channel.id, user: adminId, text: txt.errores.sinPermiso }).catch(() => {});
-    return;
-  }
-  const r = db.getReclamo(Number(action.value));
-  const aprobar = action.action_id === 'reclamo_aprobar';
-  if (!r || !db.resolverReclamo(r.id, aprobar ? 'aprobado' : 'rechazado', adminId)) {
-    await updateMsg(client, body, txt.reclamo.yaResuelto);
-    return;
-  }
-  const user = db.getUser(r.user_id);
-  const nombre = user?.nombre || r.user_id;
-  if (aprobar) {
-    db.aplicarReclamo(user, r.fecha, r.hora_pedida);
-    await updateMsg(client, body, txt.reclamo.aprobadoAdmin(nombre, r.hora_pedida, adminId));
-    await client.chat.postMessage({ channel: r.user_id, text: txt.reclamo.aprobadoUser(t.fmtDate(r.fecha), r.hora_pedida) });
-  } else {
-    await updateMsg(client, body, txt.reclamo.rechazadoAdmin(nombre, adminId));
-    await client.chat.postMessage({ channel: r.user_id, text: txt.reclamo.rechazadoUser(t.fmtDate(r.fecha)) });
-  }
-  console.log(`[reclamo] #${r.id} ${aprobar ? 'aprobado' : 'rechazado'} por ${adminId}`);
-});
 
 // ═══════════════════════════════════════════════════════════════════
 // PEDIDOS DE DÍAS — la persona confirma el borrador; un admin aprueba
@@ -492,22 +467,88 @@ app.action('solicitud_cancelar', async ({ body, action, ack, client }) => {
   await updateMsg(client, body, ok ? txt.solicitud.cancelada : txt.solicitud.yaProcesada);
 });
 
-app.action(/^solicitud_(aprobar|rechazar)$/, async ({ body, action, ack, client }) => {
+// ═══════════════════════════════════════════════════════════════════
+// APROBAR / RECHAZAR (pedidos y reclamos) — abre un modal para que el
+// admin agregue un mensaje opcional que le llega a la persona
+// ═══════════════════════════════════════════════════════════════════
+const detalleParaModal = (kind, id) => {
+  if (kind === 'solicitud') {
+    const s = db.getSolicitud(id);
+    if (!s || s.estado !== 'pendiente') return null;
+    const rango = s.desde === s.hasta ? t.fmtDate(s.desde) : `${t.fmtDate(s.desde)} al ${t.fmtDate(s.hasta)}`;
+    return { user_id: s.user_id, detalle: `${s.tipo === 'Dia personal' ? 'día personal' : s.tipo.toLowerCase()}, ${rango}` };
+  }
+  const r = db.getReclamo(id);
+  if (!r || r.estado !== 'pendiente') return null;
+  return { user_id: r.user_id, detalle: `cierre del ${t.fmtDate(r.fecha)} → salida ${r.hora_pedida}` };
+};
+
+app.action(/^(solicitud|reclamo)_(aprobar|rechazar)$/, async ({ body, action, ack, client }) => {
   await ack();
   const adminId = body.user.id;
   if (!db.isAdmin(adminId)) {
     await client.chat.postEphemeral({ channel: body.channel.id, user: adminId, text: txt.errores.sinPermiso }).catch(() => {});
     return;
   }
-  const aprobar = action.action_id === 'solicitud_aprobar';
-  const s = (aprobar ? solicitudes.aprobar : solicitudes.rechazar)({ id: Number(action.value), adminId });
-  if (!s) { await updateMsg(client, body, txt.solicitud.yaResuelta); return; }
+  const [, kind, accion] = action.action_id.match(/^(solicitud|reclamo)_(aprobar|rechazar)$/);
+  const id = Number(action.value);
+  const info = detalleParaModal(kind, id);
+  if (!info) { await updateMsg(client, body, kind === 'solicitud' ? txt.solicitud.yaResuelta : txt.reclamo.yaResuelto); return; }
+  const aprobar = accion === 'aprobar';
+  const nombre = db.getUser(info.user_id)?.nombre || info.user_id;
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: {
+      type: 'modal', callback_id: 'resolver_con_mensaje',
+      private_metadata: JSON.stringify({ kind, id, aprobar, channel: body.channel.id, ts: body.message.ts }),
+      title: { type: 'plain_text', text: txt.solicitud.modalTitulo },
+      submit: { type: 'plain_text', text: aprobar ? 'Aprobar' : 'Rechazar' },
+      close: { type: 'plain_text', text: 'Volver' },
+      blocks: [
+        { type: 'section', text: { type: 'mrkdwn', text: txt.solicitud.modalIntro(aprobar, nombre, info.detalle) } },
+        { type: 'input', block_id: 'mensaje', optional: true, label: { type: 'plain_text', text: txt.solicitud.modalLabel },
+          element: { type: 'plain_text_input', action_id: 'mensaje', multiline: true, max_length: 1000,
+            placeholder: { type: 'plain_text', text: txt.solicitud.modalPlaceholder(aprobar) } } },
+      ],
+    },
+  });
+});
+
+app.view('resolver_con_mensaje', async ({ ack, body, view, client }) => {
+  await ack();
+  const adminId = body.user.id;
+  if (!db.isAdmin(adminId)) return;
+  const { kind, id, aprobar, channel, ts } = JSON.parse(view.private_metadata || '{}');
+  const comentario = (view.state.values.mensaje?.mensaje?.value || '').trim() || null;
+  const actualizar = (text) => client.chat.update({ channel, ts, text, blocks: [] }).catch(e => console.error('[resolver] update:', e.message));
+
+  if (kind === 'reclamo') {
+    const r = db.getReclamo(id);
+    if (!r || !db.resolverReclamo(r.id, aprobar ? 'aprobado' : 'rechazado', adminId)) { await actualizar(txt.reclamo.yaResuelto); return; }
+    const user = db.getUser(r.user_id);
+    const nombre = user?.nombre || r.user_id;
+    if (aprobar) db.aplicarReclamo(user, r.fecha, r.hora_pedida);
+    await actualizar((aprobar ? txt.reclamo.aprobadoAdmin(nombre, r.hora_pedida, adminId) : txt.reclamo.rechazadoAdmin(nombre, adminId)) + (comentario ? `\n> ${comentario}` : ''));
+    await client.chat.postMessage({ channel: r.user_id, text: aprobar ? txt.reclamo.aprobadoUser(t.fmtDate(r.fecha), r.hora_pedida, comentario) : txt.reclamo.rechazadoUser(t.fmtDate(r.fecha), comentario) });
+    console.log(`[reclamo] #${r.id} ${aprobar ? 'aprobado' : 'rechazado'} por ${adminId}`);
+    return;
+  }
+
+  const s = (aprobar ? solicitudes.aprobar : solicitudes.rechazar)({ id, adminId, comentario });
+  if (!s) { await actualizar(txt.solicitud.yaResuelta); return; }
   const nombre = db.getUser(s.user_id)?.nombre || s.user_id;
   const desde = t.fmtDate(s.desde), hasta = t.fmtDate(s.hasta);
-  await updateMsg(client, body, aprobar ? txt.solicitud.aprobadaAdmin(nombre, adminId) : txt.solicitud.rechazadaAdmin(nombre, adminId));
-  await client.chat.postMessage({ channel: s.user_id, text: aprobar ? txt.solicitud.aprobadaUser(s.tipo, desde, hasta) : txt.solicitud.rechazadaUser(s.tipo, desde, hasta) });
-  console.log(`[solicitud] #${s.id} ${aprobar ? 'aprobada' : 'rechazada'} por ${adminId}`);
+  const auto = s.autoRechazadas || [];
+  await actualizar((aprobar ? txt.solicitud.aprobadaAdmin(nombre, adminId) : txt.solicitud.rechazadaAdmin(nombre, adminId))
+    + (comentario ? `\n> ${comentario}` : '')
+    + (auto.length ? txt.solicitud.autoRechazadasAdmin(auto.map(o => db.getUser(o.user_id)?.nombre || o.user_id)) : ''));
+  await client.chat.postMessage({ channel: s.user_id, text: aprobar ? txt.solicitud.aprobadaUser(s.tipo, desde, hasta, comentario) : txt.solicitud.rechazadaUser(s.tipo, desde, hasta, comentario) });
+  for (const o of auto) {
+    await client.chat.postMessage({ channel: o.user_id, text: txt.solicitud.autoRechazadaUser(o.tipo, t.fmtDate(o.desde), t.fmtDate(o.hasta), solicitudes.normalizarArea(db.getUser(o.user_id)?.equipo)) });
+  }
+  console.log(`[solicitud] #${s.id} ${aprobar ? 'aprobada' : 'rechazada'} por ${adminId}${auto.length ? ` · auto-rechazadas: ${auto.map(o => o.id).join(', ')}` : ''}`);
 });
+
 
 // ═══════════════════════════════════════════════════════════════════
 // IMPUTACIÓN POR MARCAS (modal)

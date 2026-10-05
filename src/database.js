@@ -222,6 +222,8 @@ db.exec(`
     created_at    TEXT DEFAULT (datetime('now'))
   );
 `);
+// Migración: mensaje del admin al aprobar/rechazar un pedido
+try { db.exec('ALTER TABLE solicitudes ADD COLUMN respuesta TEXT'); } catch (_) { /* tabla nueva o ya existe */ }
 db.exec(`
   -- Actividad real en Slack (solo la hora, nunca el contenido): mensajes y
   -- reacciones en canales donde está el bot. Los DMs con el bot no cuentan.
@@ -855,7 +857,45 @@ const getSolicitud = (id) => db.prepare('SELECT * FROM solicitudes WHERE id = ?'
 /** Cambia de estado solo si está en `desde` (evita dobles clicks / dos admins a la vez) */
 const pasarSolicitud = (id, desde, hacia, por = null) =>
   db.prepare('UPDATE solicitudes SET estado = ?, resuelto_por = COALESCE(?, resuelto_por) WHERE id = ? AND estado = ?').run(hacia, por, id, desde).changes > 0;
+const setRespuestaSolicitud = (id, texto) => db.prepare('UPDATE solicitudes SET respuesta = ? WHERE id = ?').run(texto || null, id);
 const marcarSolicitudEnPlanilla = (id) => db.prepare('UPDATE solicitudes SET planilla = 1 WHERE id = ?').run(id);
+/** Mismo equipo sin importar mayúsculas/acentos ("Diseño" = "diseno") */
+const mismoEquipo = (a, b) => {
+  const n = (s) => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  return Boolean(n(a)) && n(a) === n(b);
+};
+
+// Ausencias aprobadas de un compañero que bloquean al resto de su equipo
+const NOVEDADES_QUE_BLOQUEAN = ['vacaciones', 'libre', 'licencia', 'ausente'];
+
+/**
+ * Ausencias APROBADAS (vacaciones, día libre, licencia/ausencia ya
+ * cargadas) de compañeros del mismo equipo que se pisan con [desde, hasta].
+ * Lo pendiente no bloquea: queda para que decida el admin. Una entrada por
+ * persona, con el tramo que se superpone.
+ */
+const solapamientosEquipo = (userId, equipo, desde, hasta) => {
+  const companeros = getAllUsers().filter(u => u.slack_id !== userId && mismoEquipo(u.equipo, equipo));
+  if (!companeros.length) return [];
+  const ids = companeros.map(u => u.slack_id);
+  const marcas = ids.map(() => '?').join(',');
+  const porPersona = {};
+  const tipos = NOVEDADES_QUE_BLOQUEAN.map(() => '?').join(',');
+  for (const n of db.prepare(`SELECT user_id, fecha FROM novedades WHERE tipo IN (${tipos}) AND fecha BETWEEN ? AND ? AND user_id IN (${marcas})`).all(...NOVEDADES_QUE_BLOQUEAN, desde, hasta, ...ids)) {
+    const p = (porPersona[n.user_id] ||= { user_id: n.user_id, nombre: companeros.find(u => u.slack_id === n.user_id)?.nombre || n.user_id, desde: n.fecha, hasta: n.fecha });
+    if (n.fecha < p.desde) p.desde = n.fecha;
+    if (n.fecha > p.hasta) p.hasta = n.fecha;
+  }
+  return Object.values(porPersona);
+};
+
+/** Pedidos pendientes de otros del mismo equipo que se pisan con [desde, hasta] (se rechazan al aprobar uno) */
+const pendientesQueSePisan = (userId, equipo, desde, hasta) => {
+  const ids = getAllUsers().filter(u => u.slack_id !== userId && mismoEquipo(u.equipo, equipo)).map(u => u.slack_id);
+  if (!ids.length) return [];
+  return db.prepare(`SELECT * FROM solicitudes WHERE estado = 'pendiente' AND desde <= ? AND hasta >= ? AND user_id IN (${ids.map(() => '?').join(',')})`).all(hasta, desde, ...ids);
+};
+
 const solicitudesDe = (userId) => db.prepare("SELECT * FROM solicitudes WHERE user_id = ? AND estado != 'borrador' ORDER BY created_at DESC LIMIT 10").all(userId);
 
 // ═══════════════════════════════════════════════════════════════════
@@ -951,7 +991,7 @@ module.exports = {
   createToken, peekToken, consumeToken,
   getCierre, setCierre,
   logPresencia, logActividad, ultimaActividadSlack, horaAutoCierre, actividadDia, presenciaSummary, presenciaPorDia,
-  setPerfil, crearSolicitud, getSolicitud, pasarSolicitud, marcarSolicitudEnPlanilla, solicitudesDe,
+  setPerfil, crearSolicitud, getSolicitud, pasarSolicitud, setRespuestaSolicitud, marcarSolicitudEnPlanilla, solicitudesDe, mismoEquipo, solapamientosEquipo, pendientesQueSePisan,
   crearReclamo, getReclamo, reclamoPendiente, resolverReclamo, aplicarReclamo,
   getMarcas, proyectoDeMarca, resetDiaPrueba,
   addPingModo, getPingModoActivo, getPingModosEnRango, createPing, respondPing, expirarPings, pingsHoyCount, pingSummary,
