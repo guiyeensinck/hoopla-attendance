@@ -202,6 +202,26 @@ try { db.exec('ALTER TABLE cierres ADD COLUMN ultima_respuesta TEXT'); } catch (
 // Migración: la presencia se registra también fuera de horario — en_horario
 // separa los checks que cuentan para el % de presencia (los viejos eran todos en horario)
 try { db.exec('ALTER TABLE presencia ADD COLUMN en_horario INTEGER DEFAULT 1'); } catch (_) { /* ya existe */ }
+// Migración: datos de perfil que pide la planilla de solicitudes (se preguntan una vez)
+try { db.exec('ALTER TABLE users ADD COLUMN dni TEXT'); } catch (_) { /* ya existe */ }
+try { db.exec('ALTER TABLE users ADD COLUMN email TEXT'); } catch (_) { /* ya existe */ }
+db.exec(`
+  -- Pedidos de vacaciones / días personales / otros, hechos charlando con el bot
+  CREATE TABLE IF NOT EXISTS solicitudes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       TEXT NOT NULL,
+    tipo          TEXT NOT NULL,              -- Vacaciones | Dia personal | Otro (como en la planilla)
+    desde         TEXT NOT NULL,
+    hasta         TEXT NOT NULL,
+    dias_habiles  INTEGER,
+    dias_corridos INTEGER,
+    comentarios   TEXT,
+    estado        TEXT DEFAULT 'borrador',    -- borrador | pendiente | aprobada | rechazada | cancelada
+    planilla      INTEGER DEFAULT 0,          -- 1 = fila agregada en la planilla
+    resuelto_por  TEXT,
+    created_at    TEXT DEFAULT (datetime('now'))
+  );
+`);
 db.exec(`
   -- Actividad real en Slack (solo la hora, nunca el contenido): mensajes y
   -- reacciones en canales donde está el bot. Los DMs con el bot no cuentan.
@@ -403,6 +423,13 @@ const setVacacionesAnuales = (id, dias) =>
 const vacacionesFechas = (userId, anio) => db.prepare(
   "SELECT fecha FROM novedades WHERE user_id = ? AND tipo = 'vacaciones' AND fecha LIKE ? ORDER BY fecha")
   .all(userId, `${anio}-%`).map(r => r.fecha);
+
+/** Saldo de vacaciones de una persona para un año: corresponden / cargadas / quedan */
+const vacacionesSaldo = (userId, anio) => {
+  const anuales = getUser(userId)?.vacaciones_anuales ?? 21;
+  const cargadas = vacacionesFechas(userId, anio).length;
+  return { anio, anuales, cargadas, quedan: Math.round((anuales - cargadas) * 10) / 10 };
+};
 
 /** Agrupa fechas ISO consecutivas en rangos [{desde, hasta, dias}] */
 const agruparRangos = (fechas) => {
@@ -710,7 +737,7 @@ const pingSummary = (from, to) => db.prepare(`
     SUM(CASE WHEN respondido = 0 THEN 1 ELSE 0 END) as perdidos,
     ROUND(AVG(tiempo_respuesta)) as prom_seg
   FROM pings p JOIN users u ON u.slack_id = p.user_id
-  WHERE p.fecha BETWEEN ? AND ? AND p.en_horario = 1 GROUP BY p.user_id ORDER BY u.nombre`).all(from, to);
+  WHERE p.fecha BETWEEN ? AND ? GROUP BY p.user_id ORDER BY u.nombre`).all(from, to);
 
 // ═══════════════════════════════════════════════════════════════════
 // PROYECTOS E IMPUTACIONES (time tracking interno)
@@ -815,6 +842,23 @@ const marcarAviso = (userId, fecha, tipo) =>
   db.prepare('INSERT OR IGNORE INTO avisos (user_id, fecha, tipo) VALUES (?, ?, ?)').run(userId, fecha, tipo);
 
 // ═══════════════════════════════════════════════════════════════════
+// SOLICITUDES (vacaciones, días personales, otros)
+// ═══════════════════════════════════════════════════════════════════
+const setPerfil = (id, { dni, email, equipo }) => {
+  if (dni) db.prepare('UPDATE users SET dni = ? WHERE slack_id = ?').run(dni, id);
+  if (email) db.prepare('UPDATE users SET email = ? WHERE slack_id = ?').run(email, id);
+  if (equipo) db.prepare('UPDATE users SET equipo = ? WHERE slack_id = ?').run(equipo, id);
+};
+const crearSolicitud = (s) => db.prepare(`INSERT INTO solicitudes (user_id, tipo, desde, hasta, dias_habiles, dias_corridos, comentarios)
+  VALUES (?, ?, ?, ?, ?, ?, ?)`).run(s.user_id, s.tipo, s.desde, s.hasta, s.dias_habiles, s.dias_corridos, s.comentarios || null).lastInsertRowid;
+const getSolicitud = (id) => db.prepare('SELECT * FROM solicitudes WHERE id = ?').get(id);
+/** Cambia de estado solo si está en `desde` (evita dobles clicks / dos admins a la vez) */
+const pasarSolicitud = (id, desde, hacia, por = null) =>
+  db.prepare('UPDATE solicitudes SET estado = ?, resuelto_por = COALESCE(?, resuelto_por) WHERE id = ? AND estado = ?').run(hacia, por, id, desde).changes > 0;
+const marcarSolicitudEnPlanilla = (id) => db.prepare('UPDATE solicitudes SET planilla = 1 WHERE id = ?').run(id);
+const solicitudesDe = (userId) => db.prepare("SELECT * FROM solicitudes WHERE user_id = ? AND estado != 'borrador' ORDER BY created_at DESC LIMIT 10").all(userId);
+
+// ═══════════════════════════════════════════════════════════════════
 // RECLAMOS DE AUTO-CIERRE
 // ═══════════════════════════════════════════════════════════════════
 const crearReclamo = (userId, fecha, horaPedida, motivo) =>
@@ -903,10 +947,11 @@ module.exports = {
   SALIDA_VIERNES, horarioDia, horasEsperadas,
   getDia, nextTipo, horasDia, registrar, imputarAlmuerzo, getDias,
   addNovedad, borrarNovedad, cargarNovedadRango, getNovedadesFecha, getNovedadesRange, isFeriado, getFeriados, hasNovedad, isExento, diasEsperados,
-  setVacacionesAnuales, vacacionesResumen, novedadesRangosAdmin, evaluacionUsuario, TOLERANCIA_MIN,
+  setVacacionesAnuales, vacacionesResumen, vacacionesSaldo, novedadesRangosAdmin, evaluacionUsuario, TOLERANCIA_MIN,
   createToken, peekToken, consumeToken,
   getCierre, setCierre,
   logPresencia, logActividad, ultimaActividadSlack, horaAutoCierre, actividadDia, presenciaSummary, presenciaPorDia,
+  setPerfil, crearSolicitud, getSolicitud, pasarSolicitud, marcarSolicitudEnPlanilla, solicitudesDe,
   crearReclamo, getReclamo, reclamoPendiente, resolverReclamo, aplicarReclamo,
   getMarcas, proyectoDeMarca, resetDiaPrueba,
   addPingModo, getPingModoActivo, getPingModosEnRango, createPing, respondPing, expirarPings, pingsHoyCount, pingSummary,

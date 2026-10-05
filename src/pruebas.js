@@ -4,11 +4,11 @@
  * `admin probar cierre [rapido]` pone al admin en modo prueba: su horario
  * de salida pasa a ser "ahora" (el flujo de cierre arranca ya, aunque sea
  * finde o feriado) y, en modo rápido, los tiempos se aceleran para no
- * esperar 20 minutos entre preguntas. No afecta a nadie más.
+ * esperar 25 minutos entre preguntas. No afecta a nadie más.
  */
 
 // Tiempos reales del cierre (minutos)
-const TIEMPOS = { respuesta: 3, sigo: 20 };
+const TIEMPOS = { respuesta: 10, sigo: 25 };
 // Tiempos acelerados para probar
 const TIEMPOS_RAPIDO = { respuesta: 1, sigo: 2 };
 

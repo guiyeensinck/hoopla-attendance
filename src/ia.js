@@ -4,6 +4,7 @@ const { semanaUsuario, saldoMes, semanaChecks } = require('./balance');
 const { handleAdmin, USO } = require('./admin');
 const { normalize } = require('./dmrouter');
 const txt = require('./texts');
+const { contextoSolicitudes } = require('./solicitudes');
 
 /**
  * Modo conversacional (opcional): cuando un DM no matchea ningún comando
@@ -60,6 +61,7 @@ const construirContexto = (user) => {
     ...diasSemana.map(f => `${f === hoy ? 'Hoy' : t.dayjs(f).format('dddd')} — ${resumenDia(user, f)}`),
     `Semana: ${sem.trabajadas}hs trabajadas de ${sem.esperadas}hs esperadas (${sem.diff >= 0 ? '+' : ''}${sem.diff}hs). Saldo del mes: ${mes.diff >= 0 ? '+' : ''}${mes.diff}hs.`,
     `Proyectos activos: ${proyectos || '(ninguno)'}`,
+    contextoSolicitudes(user),
     ...(db.veHorarios(user.slack_id) ? [] : [`Lo único que SÍ le podés decir de su semana (día a día, sin horas): ${semanaChecks(user).dias.map(d => `${d.label} ${d.icono}`).join(' · ')} → semana ${semanaChecks(user).icono}`]),
   ].join('\n');
 };
@@ -69,8 +71,13 @@ const SYSTEM = (contexto, esAdmin) => `Sos el bot de asistencia y time tracking 
 Cómo funciona el sistema:
 - Marcaciones: entrada, inicio/fin de almuerzo, salida — vía link web de un solo uso que se abre desde la compu.
 - Horas netas del día = salida − entrada − almuerzo. Tolerancia de 10' para llegadas tarde y salidas anticipadas. Almuerzo esperado: 1 hora.
-- Cierre del día: a su horario de salida (viernes 17:30 para todos) el bot pregunta "¿terminaste?". "Terminé" cierra el día; "Sigo trabajando" se repregunta cada 20'. Sin respuesta en 3', el día se cierra automáticamente. Si seguía trabajando (ej. reunión) puede mandar un reclamo que aprueba un admin.${esAdmin ? ' [Solo para admins: el auto-cierre se estampa en la última actividad en Slack, con piso en el último "sigo".]' : ''}
+- Cierre del día: a su horario de salida (viernes 17:30 para todos) el bot pregunta "¿terminaste?". "Terminé" cierra el día; "Sigo trabajando" se repregunta cada 25'. Sin respuesta en 10', el día se cierra automáticamente. Si seguía trabajando (ej. reunión) puede mandar un reclamo que aprueba un admin.${esAdmin ? ' [Solo para admins: el auto-cierre se estampa en la última actividad en Slack, con piso en el último "sigo".]' : ''}
 - Marcas: después de la salida se cargan las marcas (clientes) en las que trabajó y el % de cada una (herramienta cargar_marcas). No hay comandos "/": todo es charla.
+
+Pedidos de días (vacaciones, día personal u otra ausencia):
+- Se piden ACÁ charlando. Andá preguntando de a una cosa lo que falte: tipo (Vacaciones, Día personal u Otro), desde y hasta (pasalas a YYYY-MM-DD; hoy es ${t.today()}), y un comentario si quiere (para "Otro" es obligatorio el motivo). Si en el contexto dice que le faltan DNI, email o área, preguntáselos (una sola vez, quedan guardados).
+- Con todo eso, usá la herramienta pedir_dias: le muestra un resumen con botones para enviarlo. Pedirlo NO es aprobarlo: lo aprueba un admin y la persona recibe el aviso.
+- Médico o enfermedad: no es un pedido, que le avise a su admin.
 
 Cómo actuar:
 - Tenés HERRAMIENTAS que hacen las cosas de verdad. Si la persona pide algo que una herramienta resuelve, USALA en vez de explicarle el comando. Lo que muestra la herramienta ya le llega a la persona (con botones y links): no lo repitas.
@@ -88,7 +95,7 @@ ${USO}` : `
 Esta persona NO es admin:
 - No puede cambiar horarios, novedades ni datos de otros. Para eso, que hable con un admin. Nunca des información de otras personas.
 - CONFIDENCIAL: tenés sus horarios registrados y sus horas para entender su situación y ayudarlo (ej. saber si le falta marcar algo), pero son un control interno de la empresa. NUNCA le digas a qué hora marcó, a qué hora se cerró su día, cuántas horas trabajó o le faltan, ni ningún número de su balance, ni lo estimes o insinúes. Lo único que podés decirle de su semana es el ✅/❌ de cada día y de la semana (está en el contexto). Si pide detalles, decile con buena onda que eso lo lleva administración. No digas cómo se calcula el cierre automático.
-- Sí podés mencionar su horario ASIGNADO (entrada/salida) y las reglas generales (3 minutos para contestar, repregunta cada 20 minutos).`}
+- Sí podés mencionar su horario ASIGNADO (entrada/salida) y las reglas generales (10 minutos para contestar, repregunta cada 25 minutos).`}
 
 Contexto real de esta persona:
 ${contexto}`;
@@ -104,6 +111,15 @@ const TOOLS_USUARIO = [
 
   { name: 'reclamar_cierre', description: 'Si su salida de hoy fue auto-cerrada, manda el botón para reclamar (estaba trabajando).', params: {} },
   { name: 'ayuda', description: 'Explicación completa de cómo funciona la asistencia y los comandos.', params: {} },
+  { name: 'pedir_dias', description: 'Arma el pedido de vacaciones / día personal / otra ausencia y le muestra un resumen con botones para enviarlo. Llamala recién cuando tengas tipo y fechas; si la persona no cargó DNI, email o área (ver contexto), preguntáselos antes y pasalos acá.', params: {
+    tipo: { type: 'string', enum: ['Vacaciones', 'Dia personal', 'Otro'] },
+    desde: { type: 'string', description: 'YYYY-MM-DD' },
+    hasta: { type: 'string', description: 'YYYY-MM-DD (igual a desde si es un solo día)' },
+    comentarios: { type: 'string', description: 'Opcional; obligatorio para Otro (motivo)' },
+    dni: { type: 'string', description: 'Solo si falta en su perfil' },
+    email: { type: 'string', description: 'Email de Hoopla, solo si falta en su perfil' },
+    area: { type: 'string', description: 'Área o equipo, solo si falta en su perfil' },
+  }, required: ['tipo', 'desde'] },
 ];
 const TOOLS_ADMIN = [
   { name: 'mi_semana_web', description: 'Manda el link a su resumen web de horas por proyecto.', params: {} },
@@ -165,6 +181,7 @@ const ejecutarTool = async (nombre, input, { user, client, say, acciones }) => {
     case 'mi_semana_web': if (!esAdmin) return 'No disponible.'; await acciones.semanaWeb(sayEco); break;
     case 'reclamar_cierre': await acciones.reclamo(sayEco); break;
     case 'ayuda': await sayEco(acciones.ayuda()); break;
+    case 'pedir_dias': return await acciones.pedirDias(input, sayEco);
     case 'buscar_personas':
       if (!esAdmin) return 'Solo admins.';
       return await buscarPersonas(client, input.nombre || '');
@@ -264,8 +281,8 @@ const filtraHorarios = (respuesta, user) => {
   const { horas } = valoresSensibles(user);
   for (const h of horas) if (!permitidas.has(h) && respuesta.includes(h)) return true;
   // Cualquier cantidad de horas/minutos, salvo las reglas generales:
-  // 3' para contestar, 10' de tolerancia, 20' de repregunta, 1 hora de almuerzo, su carga diaria
-  const reglas = { min: new Set([3, 10, 20]), hs: new Set([1, user.carga_horaria]) };
+  // 10' para contestar / de tolerancia, 25' de repregunta, 1 hora de almuerzo, su carga diaria
+  const reglas = { min: new Set([10, 25]), hs: new Set([1, user.carga_horaria]) };
   for (const m of respuesta.matchAll(/(\d+(?:[.,]\d+)?)\s*(hs|h|horas?|min(?:utos)?|')(?![a-záéíóú])/gi)) {
     const n = Number(m[1].replace(',', '.'));
     const esMin = /^(min|')/i.test(m[2]);

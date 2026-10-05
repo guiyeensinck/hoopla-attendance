@@ -397,15 +397,24 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
 
         case 'canales': {
           // El bot solo ve mensajes/reacciones de los canales donde está
-          let cursor, unidos = 0, yaEstaba = 0;
+          // Primero se listan todos y se avisa: unirse es lento (Slack limita ~50/min)
+          let cursor;
+          const canales = [];
           do {
             const r = await client.conversations.list({ limit: 200, cursor, types: 'public_channel', exclude_archived: true });
-            for (const c of r.channels) {
-              if (c.is_member) { yaEstaba++; continue; }
-              try { await client.conversations.join({ channel: c.id }); unidos++; } catch (e) { console.error(`[canales] ${c.name}: ${e.data?.error || e.message}`); }
-            }
+            canales.push(...r.channels);
             cursor = r.response_metadata?.next_cursor;
           } while (cursor);
+          const faltan = canales.filter(c => !c.is_member);
+          const yaEstaba = canales.length - faltan.length;
+          console.log(`[canales] ${canales.length} públicos, falta sumarse a ${faltan.length}`);
+          if (!faltan.length) { await say(`📡 Ya estoy en los ${yaEstaba} canales públicos.`); break; }
+          await say(`📡 Me estoy sumando a *${faltan.length}* canales públicos (ya estaba en ${yaEstaba}). Tarda un poco — te aviso cuando termine.`);
+          let unidos = 0;
+          for (const c of faltan) {
+            try { await client.conversations.join({ channel: c.id }); unidos++; } catch (e) { console.error(`[canales] ${c.name}: ${e.data?.error || e.message}`); }
+          }
+          console.log(`[canales] listo: ${unidos}/${faltan.length}`);
           await say(`📡 Me sumé a *${unidos}* canales públicos (ya estaba en ${yaEstaba}). Desde ahora registro la *hora* de los mensajes y reacciones ahí (nunca el contenido).\n_Los canales privados hay que invitarme a mano: \`/invite @bot\`._`);
           break;
         }
@@ -454,7 +463,7 @@ const handleAdmin = async ({ texto, adminId, say, client }) => {
             return;
           }
           await say(`🧪 *Pruebas* — solo te afectan a vos; el resto del equipo sigue normal.
-\`admin probar cierre\` — tu salida pasa a ser *ahora*: te llega el "¿terminaste?" (3' para contestar, "sigo" cada 20'). Si no marcaste entrada, crea una de prueba.
+\`admin probar cierre\` — tu salida pasa a ser *ahora*: te llega el "¿terminaste?" (10' para contestar, "sigo" cada 25'). Si no marcaste entrada, crea una de prueba.
 \`admin probar cierre rapido\` — igual pero con 1' para contestar y "sigo" cada 2'
 \`admin probar imputar\` — te manda el "¿en qué marcas trabajaste?" (modal con %)
 \`admin probar actividad [FECHA]\` — tu actividad en Slack registrada y a qué hora cerraría el día

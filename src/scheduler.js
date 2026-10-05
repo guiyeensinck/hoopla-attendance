@@ -21,8 +21,8 @@ const CFG = {
   ALMUERZO_HASTA: 15 * 60,          // 15:00 — deja de insistir
   TOPE_FIN_ALMUERZO: 60,            // tras inicio+60', insiste 1 hora con el fin de almuerzo
   // Cierre: a su horario de salida se le pregunta "¿terminaste?"; tiene
-  // pruebas.TIEMPOS.respuesta (3') para contestar. Si dice "sigo", se le
-  // vuelve a preguntar cada pruebas.TIEMPOS.sigo (20').
+  // pruebas.TIEMPOS.respuesta (10') para contestar. Si dice "sigo", se le
+  // vuelve a preguntar cada pruebas.TIEMPOS.sigo (25').
   CIERRE_LIMITE: 23 * 60 + 50,      // 23:50 — ninguna jornada queda abierta de un día para el otro
 };
 
@@ -163,7 +163,7 @@ const setupScheduler = (app) => {
           }
         }
 
-        // 5. Horario de salida: "¿Terminaste?" (3' para contestar)
+        // 5. Horario de salida: "¿Terminaste?" (10' para contestar)
         if (dia.entrada && !dia.salida && nowM >= salidaM && nowM <= salidaM + VENTANA_CIERRE && !db.getCierre(uid, fecha)) {
           await preguntarCierre(user, fecha, true);
         }
@@ -183,7 +183,7 @@ const setupScheduler = (app) => {
           // ('esperando' = estado del flujo viejo, por si quedó uno abierto al deployar)
           if (nowM >= t.toMin(cierre.pregunta_hora || cierre.dm_hora) + respuesta) await autoCerrar(user, fecha, cierre);
         } else if (cierre.estado === 'extendido') {
-          // Dijo "sigo trabajando" → volver a preguntar a los 20'
+          // Dijo "sigo trabajando" → volver a preguntar a los 25'
           if (nowM >= t.toMin(cierre.ultima_respuesta) + sigo) await preguntarCierre(user, fecha, false);
         }
       } catch (err) {

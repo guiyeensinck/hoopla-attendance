@@ -112,13 +112,13 @@ Hablame acá como a un compañero. Cuando llegues, escribime "llegué" y te mand
 *¿Y al final del día?*
 A tu horario de salida te pregunto si terminaste:
 • *Terminé* → cierro tu día.
-• *Sigo trabajando* → te vuelvo a preguntar cada 20 minutos.
-• Si no contestás en 3 minutos, cierro tu día automáticamente. Si seguías trabajando, avisame y lo revisa un admin.
+• *Sigo trabajando* → te vuelvo a preguntar cada 25 minutos.
+• Si no contestás en 10 minutos, cierro tu día automáticamente. Si seguías trabajando, avisame y lo revisa un admin.
 
 Después te pregunto en qué marcas trabajaste: elegís las marcas y el % de cada una.
 
-*¿Ausencias, médico, vacaciones?*
-Avisale a tu admin, que las carga en el sistema.
+*¿Vacaciones, un día personal u otra ausencia?*
+Pedímelo acá ("quiero pedir vacaciones del 5 al 16 de enero"). Te pregunto lo que haga falta y se lo paso a un admin para que lo apruebe.
 
 ¿Dudas? Preguntame lo que quieras. 💬`,
 
@@ -130,11 +130,11 @@ Hablame como a un compañero, no hace falta ningún comando:
 • *"me voy a almorzar"* / *"volví"* → link para marcar el almuerzo.
 • A tu horario de salida (viernes 17:30) te pregunto *¿terminaste?*
    ✅ *Terminé* → cierro tu día.
-   💪 *Sigo trabajando* → te repregunto cada 20'.
-   Sin respuesta en 3' → cierro tu día automáticamente. ¿Seguías trabajando? Avisame y lo revisa un admin.
+   💪 *Sigo trabajando* → te repregunto cada 25'.
+   Sin respuesta en 10' → cierro tu día automáticamente. ¿Seguías trabajando? Avisame y lo revisa un admin.
 • *"hoy estuve en Jumbo y Coral"* o *"cargar"* → anotamos en qué marcas trabajaste (con el % de cada una).
 
-Para vacaciones, médico o ausencias, hablalo con tu admin.`,
+• *"quiero pedir vacaciones"* / *"necesito un día personal"* → te pregunto lo que falte y se lo paso a un admin para que lo apruebe.`,
 
   // ─── Recordatorios ────────────────────────────────────────────────
   recordatorios: {
@@ -176,6 +176,27 @@ Para vacaciones, médico o ausencias, hablalo con tu admin.`,
     aprobadoUser: (fecha, hora) => `✅ Aprobaron tu reclamo: tu salida del ${fecha} quedó a las *${hora}*.`,
     rechazadoUser: (fecha) => `❌ No aprobaron tu reclamo del ${fecha}. Si tenés dudas, hablalo con tu admin.`,
     yaResuelto: 'Este reclamo ya fue resuelto.',
+  },
+
+  // ─── Pedidos de días (vacaciones, día personal, otro) ─────────────
+  solicitud: {
+    resumen: ({ tipo, desde, hasta, habiles, corridos, comentarios }) => `📝 *Tu pedido de ${tipo === 'Dia personal' ? 'día personal' : tipo.toLowerCase()}*
+• ${desde === hasta ? `Día: *${desde}*` : `Del *${desde}* al *${hasta}*`}
+• ${tipo === 'Vacaciones' ? `${corridos} días corridos (${habiles} hábiles)` : `${habiles} día${habiles === 1 ? '' : 's'} hábil${habiles === 1 ? '' : 'es'}`}${comentarios ? `\n• Comentario: _${comentarios}_` : ''}
+¿Lo envío? Lo revisa un admin y te aviso cuando lo apruebe.`,
+    btnEnviar: '📨 Enviar pedido',
+    btnCancelar: 'Cancelar',
+    enviada: '📨 ¡Listo! Mandé tu pedido. Te aviso acá cuando un admin lo revise.',
+    cancelada: 'Listo, descarté el pedido. Si querés armar otro, contame.',
+    yaProcesada: 'Este pedido ya fue enviado o cancelado.',
+    noEncontrada: 'No encontré ese pedido.',
+    admin: ({ nombre, tipo, desde, hasta, habiles, corridos, comentarios, vacaciones, planilla }) => `📝 *Pedido de ${tipo === 'Dia personal' ? 'día personal' : tipo.toLowerCase()} — ${nombre}*
+${desde === hasta ? desde : `${desde} → ${hasta}`} · ${tipo === 'Vacaciones' ? `${corridos} días corridos (${habiles} hábiles)` : `${habiles} día${habiles === 1 ? '' : 's'} hábil${habiles === 1 ? '' : 'es'}`}${comentarios ? `\n> ${comentarios}` : ''}${vacaciones ? `\n_Vacaciones: le quedan ${vacaciones.quedan} de ${vacaciones.anuales} días en ${vacaciones.anio} (antes de este pedido)._` : ''}${planilla === false ? '\n⚠️ _No pude escribirlo en la planilla — revisá los logs._' : planilla ? '\n_Agregado a la planilla de solicitudes._' : ''}`,
+    aprobadaAdmin: (nombre, admin) => `✅ Pedido de *${nombre}* aprobado por <@${admin}> — ya quedó cargado en la asistencia.`,
+    rechazadaAdmin: (nombre, admin) => `❌ Pedido de *${nombre}* rechazado por <@${admin}>.`,
+    aprobadaUser: (tipo, desde, hasta) => `🎉 *¡Aprobaron tu pedido!* ${tipo === 'Dia personal' ? 'Día personal' : tipo} ${desde === hasta ? `el ${desde}` : `del ${desde} al ${hasta}`}. Esos días no te van a llegar recordatorios.`,
+    rechazadaUser: (tipo, desde, hasta) => `No aprobaron tu pedido de ${tipo === 'Dia personal' ? 'día personal' : tipo.toLowerCase()} (${desde === hasta ? desde : `${desde} al ${hasta}`}). Hablalo con tu admin para ver alternativas.`,
+    yaResuelta: 'Este pedido ya fue resuelto.',
   },
 
   // ─── Imputación por marcas (modal) ────────────────────────────────

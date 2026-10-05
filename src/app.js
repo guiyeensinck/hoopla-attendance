@@ -8,6 +8,7 @@ const { handleAdmin } = require('./admin');
 const { route } = require('./dmrouter');
 const { procesarImputacion, vistaProyectos, promptImputacion, btnMarcas } = require('./proyectos');
 const marcas = require('./marcas');
+const solicitudes = require('./solicitudes');
 const { registrarActividad } = require('./activity');
 const pruebas = require('./pruebas');
 const { responderIA, iaActiva } = require('./ia');
@@ -194,6 +195,12 @@ app.message(async ({ message, say, client }) => {
   }
   if (message.subtype || message.bot_id) return;          // solo mensajes humanos
   const uid = message.user;
+  console.log(`[dm] ${uid}: ${(message.text || '').slice(0, 60)}`);
+  // Con la vista de agente de Slack la charla vive en un hilo: responder ahí
+  if (message.thread_ts) {
+    const decir = say;
+    say = (msg) => decir({ ...(typeof msg === 'string' ? { text: msg } : msg), thread_ts: message.thread_ts });
+  }
   const conIA = iaActiva();
   // Con IA, las palabras clave solo aplican a mensajes cortos ("marcar",
   // "mis horas"): una frase como "salida anticipada para Juan" va a la charla.
@@ -320,6 +327,7 @@ const accionesIA = (user, say, client) => ({
     ] });
   },
   ayuda: () => txt.ayuda,
+  pedirDias: (datos, s) => solicitudes.borrador({ user, client, say: s, datos }),
 });
 
 app.action('semana_web', async ({ body, ack, client }) => {
@@ -358,7 +366,7 @@ app.action('cierre_salida', async ({ body, ack, client }) => {
   console.log(`[cierre] ${user.nombre} marcó salida ${hora} (botón)`);
 });
 
-// "Sigo trabajando" — extiende la jornada; se le vuelve a preguntar a los 20'
+// "Sigo trabajando" — extiende la jornada; se le vuelve a preguntar a los 25'
 app.action('cierre_sigo', async ({ body, ack, client }) => {
   await ack();
   const uid = body.user.id;
@@ -467,6 +475,38 @@ app.action(/^reclamo_(aprobar|rechazar)$/, async ({ body, action, ack, client })
     await client.chat.postMessage({ channel: r.user_id, text: txt.reclamo.rechazadoUser(t.fmtDate(r.fecha)) });
   }
   console.log(`[reclamo] #${r.id} ${aprobar ? 'aprobado' : 'rechazado'} por ${adminId}`);
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PEDIDOS DE DÍAS — la persona confirma el borrador; un admin aprueba
+// ═══════════════════════════════════════════════════════════════════
+app.action('solicitud_enviar', async ({ body, action, ack, client }) => {
+  await ack();
+  const r = await solicitudes.enviar({ id: Number(action.value), uid: body.user.id, client, adminTarget });
+  await updateMsg(client, body, r.texto);
+});
+
+app.action('solicitud_cancelar', async ({ body, action, ack, client }) => {
+  await ack();
+  const ok = solicitudes.cancelar({ id: Number(action.value), uid: body.user.id });
+  await updateMsg(client, body, ok ? txt.solicitud.cancelada : txt.solicitud.yaProcesada);
+});
+
+app.action(/^solicitud_(aprobar|rechazar)$/, async ({ body, action, ack, client }) => {
+  await ack();
+  const adminId = body.user.id;
+  if (!db.isAdmin(adminId)) {
+    await client.chat.postEphemeral({ channel: body.channel.id, user: adminId, text: txt.errores.sinPermiso }).catch(() => {});
+    return;
+  }
+  const aprobar = action.action_id === 'solicitud_aprobar';
+  const s = (aprobar ? solicitudes.aprobar : solicitudes.rechazar)({ id: Number(action.value), adminId });
+  if (!s) { await updateMsg(client, body, txt.solicitud.yaResuelta); return; }
+  const nombre = db.getUser(s.user_id)?.nombre || s.user_id;
+  const desde = t.fmtDate(s.desde), hasta = t.fmtDate(s.hasta);
+  await updateMsg(client, body, aprobar ? txt.solicitud.aprobadaAdmin(nombre, adminId) : txt.solicitud.rechazadaAdmin(nombre, adminId));
+  await client.chat.postMessage({ channel: s.user_id, text: aprobar ? txt.solicitud.aprobadaUser(s.tipo, desde, hasta) : txt.solicitud.rechazadaUser(s.tipo, desde, hasta) });
+  console.log(`[solicitud] #${s.id} ${aprobar ? 'aprobada' : 'rechazada'} por ${adminId}`);
 });
 
 // ═══════════════════════════════════════════════════════════════════

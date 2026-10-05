@@ -33,15 +33,15 @@ Los horarios registrados, las horas trabajadas, el saldo y la actividad en Slack
 - La persona ve confirmaciones sin hora ("✅ Entrada registrada", "cerré tu día automáticamente"), su horario asignado y en qué marcas cargó su día (en %).
 - **Su semana, día a día y sin horas**: ✅ el día cumplió su carga (con 10' de tolerancia), ❌ no la cumplió o no tiene registro, ⏳ hoy en curso, 🏖️ novedad. La semana es ✅ solo si ningún día tiene ❌. Lo ve preguntándole al bot ("¿cómo vengo?") y en la página después de marcar.
 - `horarios` con detalle, `mi semana`, el formulario web por horas y el saldo del mes quedan solo para admins.
-- **IA**: recibe los horarios y horas de la persona (la semana completa) para entender y explicar ("¿por qué el martes me dio ❌?"), pero tiene prohibido decirlos y **el servidor revisa cada respuesta**: si menciona una hora que no sea su horario asignado, o cualquier cantidad de horas/minutos que no sea una regla general (3' / 10' / 20', 1 hora de almuerzo, su carga diaria), se la hace reescribir; si insiste, responde que eso lo lleva administración.
+- **IA**: recibe los horarios y horas de la persona (la semana completa) para entender y explicar ("¿por qué el martes me dio ❌?"), pero tiene prohibido decirlos y **el servidor revisa cada respuesta**: si menciona una hora que no sea su horario asignado, o cualquier cantidad de horas/minutos que no sea una regla general (10' / 25', 1 hora de almuerzo, su carga diaria), se la hace reescribir; si insiste, responde que eso lo lleva administración.
 - El reclamo de un auto-cierre no muestra la hora del cierre; el admin la ve al aprobar.
 - El onboarding no detalla el registro de actividad en Slack.
 
 ### Cierre del día
 A su horario de salida (viernes 17:30) el bot le pregunta a cada persona **"¿Terminaste?"** con dos botones:
 - **✅ Terminé** → registra la salida con hora del servidor.
-- **💪 Sigo trabajando** → la jornada sigue y el bot **vuelve a preguntar cada 20 minutos**. Las horas extra suman al balance (que ven los admins).
-- **Sin respuesta en 3 minutos** → cierre automático en la **última actividad en Slack**: último check de presencia "activo" o último mensaje/reacción en un canal (la interacción con el bot y las marcaciones **no** cuentan). Nunca pasa de la hora de la pregunta que quedó sin responder. Si había dicho "sigo", su última respuesta es el piso. Sin ninguna señal ese día, se estampa su horario.
+- **💪 Sigo trabajando** → la jornada sigue y el bot **vuelve a preguntar cada 25 minutos**. Las horas extra suman al balance (que ven los admins).
+- **Sin respuesta en 10 minutos** → cierre automático en la **última actividad en Slack**: último check de presencia "activo" o último mensaje/reacción en un canal (la interacción con el bot y las marcaciones **no** cuentan). Nunca pasa de la hora de la pregunta que quedó sin responder. Si había dicho "sigo", su última respuesta es el piso. Sin ninguna señal ese día, se estampa su horario.
 - Si la salida quedó después de las 14:00 y falta el almuerzo, se imputa 13:00–14:00.
 - A las 23:50 se cierra cualquier jornada que siga abierta.
 
@@ -64,7 +64,7 @@ Los recordatorios a la persona se repiten **cada 10 minutos** hasta que marca (u
 | Entrada personal +60 min | Alerta al canal admin con faltantes (una vez) |
 | 13:30 a 15:00 | DM cada 10' si no marcó el inicio del almuerzo |
 | Inicio almuerzo +60' | DM cada 10' si no marcó el fin del almuerzo (tope: 1 hora) |
-| Horario de salida (viernes 17:30) | "¿Terminaste?" con **Terminé / Sigo trabajando**; sin respuesta en **3'** → auto-cierre por última actividad en Slack; "sigo" → repregunta cada **20'** |
+| Horario de salida (viernes 17:30) | "¿Terminaste?" con **Terminé / Sigo trabajando**; sin respuesta en **10'** → auto-cierre por última actividad en Slack; "sigo" → repregunta cada **25'** |
 | 19:00 | Resumen diario **por excepción**: solo anomalías (tardes, ausencias sin novedad, auto-cierres, intentos mobile). Si no hay: "Sin novedades, N presentes" |
 | 19:00 | **Patrones detectados** (solo si hay nuevos): ver sección siguiente |
 | Lunes 09:00 | **Resumen ejecutivo**: semana pasada en números + desvíos + novedades de esta semana |
@@ -76,6 +76,13 @@ Los recordatorios a la persona se repiten **cada 10 minutos** hasta que marca (u
 - **Ficha de persona** (`admin persona @user`): últimos 10 días hábiles — horas vs esperadas, entrada promedio, tardes, auto-cierres, % presencia, saldo del mes y novedades. Contexto instantáneo para una 1:1.
 - **Banco de horas**: saldo mensual acumulado por persona (trabajadas − esperadas del 1° a hoy). Solo lo ven los admins: en la ficha y en los patrones.
 - **Equipos** (`admin equipo @user Nombre`): los reportes semanal/mensual y el resumen ejecutivo agrupan y totalizan por equipo; el dashboard muestra el equipo en el roster.
+
+### Pedidos de días (vacaciones, día personal, otro)
+La persona lo pide **charlando con el bot** ("quiero pedir vacaciones del 4 al 15 de enero", "necesito un día personal el viernes"). La IA va preguntando lo que falte, de a una cosa: tipo (Vacaciones / Día personal / Otro), fechas, comentario (obligatorio para *Otro*) y, **solo la primera vez**, DNI, email de Hoopla y área (quedan guardados en su perfil). Después muestra un resumen con **📨 Enviar pedido / Cancelar**.
+- **Al enviar**: se agrega una fila en la planilla de solicitudes con las mismas columnas que el Google Form (Timestamp, Nombre, DNI, Área, email, Tipo, inicio, fin, cantidad de días, comentarios, email) y le llega al canal admin con **Aprobar / Rechazar** (para vacaciones, con el saldo que le queda ese año).
+- **Pedirlo no es aprobarlo**: al **aprobar**, se carga solo como novedad (Vacaciones → `vacaciones` en días corridos; Día personal → `libre` en días hábiles; Otro → `licencia`) y la persona recibe el aviso; al **rechazar**, también se le avisa.
+- Médico o enfermedad no es un pedido: lo carga el admin.
+- **Planilla**: la forma más simple es el Apps Script de [`apps-script.gs`](apps-script.gs), pegado en la planilla (*Extensiones → Apps Script*) e implementado como aplicación web; el bot le manda cada fila con una clave compartida (`SOLICITUDES_WEBHOOK_URL` + `SOLICITUDES_WEBHOOK_SECRET`). Alternativa: cuenta de servicio de Google (`GOOGLE_SERVICE_ACCOUNT_JSON`). Sin ninguna, el pedido igual funciona (queda en la app y llega al admin), solo que no se escribe la fila.
 
 ### Modo "solo proyectos"
 `admin soloproyectos @user` exime a una persona de toda la asistencia (sin marcaciones, recordatorios, presencia ni patrones — tampoco cuenta en faltantes ni reportes de horas) pero **sí carga horas de proyectos**: el bot le pregunta cada día a su horario de salida y puede imputar cuando quiera. Ideal para freelancers o socios. Se revierte con `admin completo @user`. El dashboard la muestra con badge "Solo proyectos".
@@ -177,6 +184,9 @@ Protegido opcionalmente con `DASHBOARD_TOKEN` (basic auth).
 | `PORT` | — | Railway lo inyecta; local default 3000 |
 | `SOLO_MODE` / `SOLO_USER_ID` | — | `true` = beta cerrada: solo responde a esos IDs (varios separados por coma); los mensajes de canal van al DM del primero |
 | `DASHBOARD_TOKEN` | — | Si se setea, el dashboard pide esta clave |
+| `SOLICITUDES_WEBHOOK_URL` / `SOLICITUDES_WEBHOOK_SECRET` | — | URL de la aplicación web del Apps Script de la planilla y la clave compartida (la misma que `SECRET` en el script) |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | — | Clave JSON de una cuenta de servicio de Google (el archivo completo o en base64). La planilla de solicitudes tiene que estar compartida con su email como **Editor** |
+| `SOLICITUDES_SHEET_ID` / `SOLICITUDES_SHEET_GID` | — | Planilla y pestaña donde se escriben los pedidos (default: la planilla de solicitudes de Hoopla, pestaña de respuestas del form) |
 
 ---
 
@@ -296,6 +306,8 @@ src/
 ├── scheduler.js     # Motor por minuto (horarios personales, cierre "¿terminaste?") + crons fijos
 ├── activity.js      # Presencia cada 2 min + actividad en canales + pings dirigidos
 ├── marcas.js        # Modal "¿en qué marcas trabajaste?" (marcas + %)
+├── solicitudes.js   # Pedidos de días: borrador → enviar → aprobar/rechazar
+├── planilla.js      # Escribe filas en Google Sheets (cuenta de servicio, sin dependencias)
 ├── pruebas.js       # Modo prueba por persona (admin probar ...)
 ├── balance.js       # Balance semanal individual (semáforo, compensación)
 ├── web.js           # Páginas /verify/:token (marcación) e /imputar/:token (form de horas)
