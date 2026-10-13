@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@slack/bolt": "^3.17.0",
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "^12.11.1",
     "dayjs": "^1.11.10",
     "dotenv": "^16.4.5",
     "exceljs": "^4.4.0",
